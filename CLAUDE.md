@@ -89,15 +89,15 @@ python scripts/preprocess_cad.py --input data/raw --output data/processed
 
 **1. Fixed Topology, Variable Geometry**
 - Single part family: L-brackets with 2 mounting holes
-- Constant topology: Always 6 faces, 2 holes
-- Only dimensions vary: 8 parameters (length, width, height, hole diameters, positions, thickness)
-- Range constraints per parameter (e.g., base_length: [50, 200] mm)
+- Constant topology: Always 10 faces (8 bracket body + 2 cylindrical holes)
+- Only dimensions vary: 8 parameters (leg lengths, width, thickness, hole diameters, hole distances)
+- Range constraints per parameter (e.g., leg_length: [50, 200] mm)
 
 **2. Simplified Graph Representation**
 - Face-adjacency graph (nodes = faces, edges = face adjacency)
 - Node features: [face_type, area, normal_vector, centroid]
 - Edge features: [edge_length, dihedral_angle]
-- Fixed graph structure (6 nodes, ~12 edges)
+- Fixed graph structure (10 nodes for L-bracket)
 
 **3. Synthetic Training Data**
 - Generate 5k-10k parametric models programmatically
@@ -244,6 +244,72 @@ python scripts/preprocess_cad.py --input data/raw --output data/processed
 **Data Sources**:
 - Synthetic: Custom generators for PoC
 - Real: ABC Dataset (1M+ models), Fusion 360 Gallery (20k models)
+
+### L-Bracket Generator Decisions
+
+**Geometry & Coordinate System:**
+```
+        Z
+        ↑
+        │   ┌─────────┐
+        │   │         │
+        │   │    ○    │  ← Leg 2 (Y-Z plane, extends +Z)
+        │   │  hole2  │
+        │   │         │
+        ├───┼─────────┘
+        │   │thickness
+ origin ●━━━┿━━━━━━━━━━━━━━━┓
+        │   │               ┃
+        │   │      ○        ┃  ← Leg 1 (X-Y plane, extends +X)
+        │   │    hole1      ┃
+        └───┴───────────────┻────→ X
+            └── thickness ──┘
+
+        Y goes into the page (width direction)
+```
+
+- Origin at outer corner where leg 1 and leg 2 meet (all dimensions positive)
+- Leg 1 on X-Y plane, extends along +X
+- Leg 2 on Y-Z plane, extends along +Z
+- Width along Y axis
+
+**Parameters (8 total):**
+
+| Parameter | Min | Max | Description |
+|-----------|-----|-----|-------------|
+| `leg1_length` | 50 | 200 | Length along +X (mm) |
+| `leg2_length` | 50 | 200 | Length along +Z (mm) |
+| `width` | 20 | 60 | Extent along Y (mm) |
+| `thickness` | 3 | 12 | Material thickness (mm) |
+| `hole1_diameter` | 4 | 12 | Hole in leg 1 (mm) |
+| `hole2_diameter` | 4 | 12 | Hole in leg 2 (mm) |
+| `hole1_distance` | derived | derived | From end of leg 1 to hole center |
+| `hole2_distance` | derived | derived | From end of leg 2 to hole center |
+
+**Derived constraints:**
+- Holes on centerline (Y = width/2), so no lateral position parameters
+- `hole_distance` min: 1 diameter from end
+- `hole_distance` max: 1 diameter from corner (`leg_length - thickness - diameter`)
+- `width` min: `2 × max(hole_diameters)` to ensure 1 diameter clearance from edges
+
+**B-Rep Topology (OpenCASCADE/CadQuery):**
+- **10 faces total**: 8 bracket body + 2 cylindrical hole faces
+- Full cylinder = 1 face with 1 seam edge (unlike Creo which uses 2 half-cylinders)
+- Through-holes: each adds 1 cylindrical face, modifies planar faces with inner edge loops
+- Edges shared between adjacent faces (manifold geometry)
+
+**Implementation Decisions:**
+- **CAD Kernel**: CadQuery (Pythonic API, sufficient for PoC)
+- **Units**: Millimeters throughout
+- **Sampling**: Uniform distribution over parameter ranges
+- **Design Pattern**: Class-based with validation on construction
+- **Output**: STEP files + metadata CSV with ground truth parameters
+
+**Usage:**
+```bash
+# Generate 5000 training samples
+python scripts/generate_l_brackets.py --output data/raw --count 5000 --seed 42
+```
 
 ### Key Architectural Notes
 
