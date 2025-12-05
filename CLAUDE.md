@@ -311,6 +311,48 @@ python scripts/preprocess_cad.py --input data/raw --output data/processed
 python scripts/generate_l_brackets.py --output data/raw --count 5000 --seed 42
 ```
 
+### Graph Extraction Decisions
+
+**Graph Structure:**
+- Face-adjacency graph: nodes = faces, edges = shared topological edges
+- L-bracket produces 10 nodes (8 planar + 2 cylindrical) and 22 edges
+- Seam edges (cylinder self-loops) excluded—only face-to-face adjacency tracked
+- COO sparse format for edge indices (PyTorch Geometric compatible)
+
+**Node Features (8D per face):**
+| Index | Feature | Description |
+|-------|---------|-------------|
+| 0 | face_type | Integer: 0=planar, 1=cylindrical, 2=other |
+| 1 | area | Normalized by bbox_diagonal² |
+| 2-4 | dir_x/y/z | Planar: surface normal; Cylindrical: axis direction |
+| 5-7 | centroid | Normalized position (centered on bbox) |
+
+**Edge Features (2D per edge):**
+| Index | Feature | Description |
+|-------|---------|-------------|
+| 0 | edge_length | Total shared edge length, normalized |
+| 1 | dihedral_angle | Angle between face normals (radians, 0 to π) |
+
+**Key Design Decisions:**
+- **Cylinder axis vs normal**: Cylindrical faces store axis direction (meaningful) rather than a sampled surface normal (arbitrary point on cylinder has no single normal)
+- **Normalization**: All lengths/positions normalized by bounding box diagonal for scale invariance
+- **Sufficiency for reconstruction**: With fixed topology, edge lengths + face features act like "origami constraints"—should uniquely determine shape (up to rigid transformation)
+
+**Reconstruction Path (Graph → CAD):**
+- For PoC: Graph features are over-determined (80+ values → 8 parameters), so a parameter regressor can recover L-bracket dimensions
+- For MVP: More complex—will need direct B-Rep generation from graph or learned implicit reconstruction
+
+**Usage:**
+```python
+from graph_cad.data import extract_graph, extract_graph_from_solid
+
+# From STEP file
+graph = extract_graph("bracket.step")
+
+# From CadQuery solid (skip file I/O)
+graph = extract_graph_from_solid(bracket.to_solid())
+```
+
 ### Key Architectural Notes
 
 **Why Graph Representation?**
