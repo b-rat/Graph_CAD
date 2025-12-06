@@ -353,6 +353,52 @@ graph = extract_graph("bracket.step")
 graph = extract_graph_from_solid(bracket.to_solid())
 ```
 
+### Parameter Regressor Results
+
+**Purpose:** Validate that graph features contain sufficient information to reconstruct L-bracket parameters. This GNN predicts the 8 L-bracket dimensions directly from the face-adjacency graph.
+
+**Architecture:**
+- 3× GAT layers (4 attention heads, 64 hidden dim)
+- Global mean pooling → MLP → 8 parameters
+- ~32K trainable parameters
+
+**Training Configuration:**
+- 5000 training samples, 500 val, 500 test
+- 100 epochs, batch size 32
+- AdamW optimizer, cosine LR schedule
+- First epoch: ~16 min (graph generation), subsequent: <1s (cached)
+
+**Test Results (5000 samples, 100 epochs):**
+
+| Parameter | MAE (mm) | Error % |
+|-----------|----------|---------|
+| leg1_length | 10.83 | 7.2% |
+| leg2_length | 10.77 | 7.2% |
+| width | 3.55 | 8.9% |
+| thickness | 0.68 | 7.5% |
+| hole1_distance | 7.40 | 4.2% |
+| hole1_diameter | 0.80 | 10.0% |
+| hole2_distance | 7.28 | 4.1% |
+| hole2_diameter | 0.82 | 10.2% |
+| **Overall** | **5.27** | **~7%** |
+
+**Key Findings:**
+1. **Graph representation is sufficient** — model successfully learns parameter mapping
+2. **Hole distances easiest** (~4% error) — well-captured by face centroids
+3. **Hole diameters hardest** (~10% error) — smallest parameter range (4-12mm)
+4. **Not yet at <1% target** — likely needs more data, larger model, or architectural changes
+
+**Paths to Improvement:**
+- Increase training data (10k+ samples)
+- Larger model (hidden_dim=128, more layers)
+- Add edge position features (where edges are located, not just length)
+- Separate regression heads per parameter type
+
+**Usage:**
+```bash
+python scripts/train_regressor.py --train-size 5000 --epochs 100
+```
+
 ### Key Architectural Notes
 
 **Why Graph Representation?**
