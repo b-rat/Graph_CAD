@@ -1,14 +1,10 @@
 # Core dependencies
-# Uncomment and specify versions as needed
 
-# Deep Learning Framework (choose one)
-# torch>=2.0.0
-# tensorflow>=2.13.0
+# Deep Learning Framework
+torch>=2.0.0
 
-# Graph Neural Networks (choose based on framework)
-# torch-geometric>=2.3.0  # For PyTorch
-# dgl>=1.1.0              # Deep Graph Library
-# spektral>=1.2.0         # For TensorFlow/Keras
+# Graph Neural Networks
+torch-geometric>=2.4.0
 
 # Scientific Computing
 # numpy>=1.24.0
