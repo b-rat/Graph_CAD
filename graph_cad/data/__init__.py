@@ -16,3 +16,11 @@ __all__ = [
     "extract_graph",
     "extract_graph_from_solid",
 ]
+
+# Optional imports requiring PyTorch
+try:
+    from graph_cad.data.dataset import LBracketDataset, create_data_loaders
+
+    __all__.extend(["LBracketDataset", "create_data_loaders"])
+except ImportError:
+    pass
