@@ -355,7 +355,9 @@ graph = extract_graph_from_solid(bracket.to_solid())
 
 ### Parameter Regressor Results
 
-**Purpose:** Validate that graph features contain sufficient information to reconstruct L-bracket parameters. This GNN predicts the 8 L-bracket dimensions directly from the face-adjacency graph.
+**Purpose:** Validation experiment to confirm that the graph representation contains sufficient information to uniquely determine L-bracket geometry. This is NOT a core component—it answers the question: "Is our feature design adequate?"
+
+**Key Validation:** If Graph → Parameters is learnable with reasonable accuracy, then the graph features (face types, areas, normals/axes, centroids, edge lengths, dihedral angles) capture the essential geometry. This GNN predicts the 8 L-bracket dimensions directly from the face-adjacency graph.
 
 **Architecture:**
 - 3× GAT layers (4 attention heads, 64 hidden dim)
@@ -386,13 +388,9 @@ graph = extract_graph_from_solid(bracket.to_solid())
 1. **Graph representation is sufficient** — model successfully learns parameter mapping
 2. **Hole distances easiest** (~4% error) — well-captured by face centroids
 3. **Hole diameters hardest** (~10% error) — smallest parameter range (4-12mm)
-4. **Not yet at <1% target** — likely needs more data, larger model, or architectural changes
+4. **Validation complete** — ~7% error proves concept; further refinement deferred
 
-**Paths to Improvement:**
-- Increase training data (10k+ samples)
-- Larger model (hidden_dim=128, more layers)
-- Add edge position features (where edges are located, not just length)
-- Separate regression heads per parameter type
+**Conclusion:** The regressor validated our feature design. For the autoencoder, the primary loss is graph feature reconstruction (MSE on nodes + edges). The regressor becomes an optional evaluation metric to confirm reconstructed graphs encode valid geometry. No further regressor refinement needed before building the autoencoder.
 
 **Usage:**
 ```bash
