@@ -399,6 +399,47 @@ graph = extract_graph_from_solid(bracket.to_solid())
 python scripts/train_regressor.py --train-size 5000 --epochs 100
 ```
 
+### PoC Autoencoder Architecture Decision
+
+**Key Insight:** Fixed topology dramatically simplifies the decoder.
+
+For L-brackets, topology is constant (always 10 nodes, 22 edges, same adjacency). The decoder doesn't need to *generate* structure—only predict feature values for a known structure.
+
+**PoC Architecture (Simplified):**
+```
+Input Graph (10×8D nodes, 22×2D edges, fixed adjacency)
+    ↓
+Graph Encoder (GAT layers + global pooling)
+    ↓
+Latent Vector z ∈ ℝ³² to ℝ⁶⁴
+    ↓
+Feature Decoder (MLP)
+    ↓
+Predicted Features (10×8D nodes, 22×2D edges)
+    ↓
+[Same fixed adjacency as input]
+```
+
+**Decoder = MLP** outputting 10×8 + 22×2 = 124 values, reshaped into node/edge features. No transformer, no autoregressive generation needed.
+
+**Loss Function:**
+```
+Loss = λ₁ × MSE(predicted_node_features, true_node_features)
+     + λ₂ × MSE(predicted_edge_features, true_edge_features)
+     + λ₃ × MSE(regressor(predicted_graph), true_parameters)  [optional]
+```
+
+The parameter regressor can serve as:
+1. **Evaluation metric**: Validate predicted graphs encode correct geometry
+2. **Training signal**: Add semantic loss ensuring latent captures meaningful parameters
+
+**MVP Architecture (Future - Variable Topology):**
+When topology varies (6-50 nodes), decoder becomes generative:
+- Predict number of nodes
+- Autoregressive node generation (transformer decoder)
+- Predict edge existence (attention/pointer mechanism)
+- This is deferred complexity—PoC proves the concept first
+
 ### Key Architectural Notes
 
 **Why Graph Representation?**
