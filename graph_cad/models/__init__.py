@@ -11,14 +11,26 @@ try:
         denormalize_parameters,
         normalize_parameters,
     )
+    from graph_cad.models.graph_vae import (
+        GraphVAE,
+        GraphVAEConfig,
+        GraphVAEEncoder,
+        GraphVAEDecoder,
+    )
 
     __all__ = [
+        # Parameter regressor
         "ParameterRegressor",
         "ParameterRegressorConfig",
         "PARAMETER_NAMES",
         "brep_graph_to_pyg",
         "normalize_parameters",
         "denormalize_parameters",
+        # Graph VAE
+        "GraphVAE",
+        "GraphVAEConfig",
+        "GraphVAEEncoder",
+        "GraphVAEDecoder",
     ]
 except ImportError:
     # PyTorch/PyG not installed

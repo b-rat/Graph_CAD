@@ -460,3 +460,49 @@ The quality of the latent space determines everything. It must be:
 4. Structured enough for LLM to learn semantics
 
 The graph-aware attention mechanism is designed to ensure these properties.
+
+### Graph VAE Implementation
+
+**Status**: Implemented and tested (40/40 tests passing)
+
+**Architecture Decisions:**
+- **Type**: Variational Autoencoder (VAE) — chosen for smooth latent space and interpolation capability
+- **Latent dim**: 64D — 8× the 8 L-bracket parameters, good capacity without overfitting
+- **Encoder**: Reuses GAT architecture from parameter regressor (3× GAT layers, 4 heads, 64 hidden)
+- **Decoder**: MLP with split heads — separate outputs for nodes (80D) and edges (44D)
+- **Beta schedule**: Warmup strategy (β=0 for 10 epochs, then linear ramp to target)
+
+**Loss Function:**
+```
+Loss = λ_node × MSE(node_features)
+     + λ_edge × MSE(edge_features)
+     + β × KL(z || N(0,I))
+     + λ_semantic × MSE(regressor(recon), regressor(orig))  [optional]
+```
+
+**Files:**
+- `graph_cad/models/graph_vae.py` — GraphVAE, GraphVAEEncoder, GraphVAEDecoder, GraphVAEConfig
+- `graph_cad/models/losses.py` — reconstruction_loss, kl_divergence, vae_loss, semantic_loss
+- `graph_cad/training/vae_trainer.py` — BetaScheduler, train_epoch, evaluate, compute_latent_metrics
+- `scripts/train_vae.py` — CLI training script
+- `scripts/evaluate_vae.py` — Evaluation and latent space analysis
+
+**Usage:**
+```bash
+# Basic training
+python scripts/train_vae.py --epochs 100 --latent-dim 64
+
+# With semantic loss (uses pre-trained regressor)
+python scripts/train_vae.py --use-semantic-loss
+
+# Evaluate trained model
+python scripts/evaluate_vae.py --checkpoint outputs/vae/best_model.pt --all
+```
+
+**Success Metrics (targets):**
+| Metric | Target |
+|--------|--------|
+| Node MSE | < 0.01 (normalized) |
+| Edge MSE | < 0.01 (normalized) |
+| Active latent dims | > 32 of 64 |
+| Interpolation validity | > 95% |
