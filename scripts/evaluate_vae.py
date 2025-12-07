@@ -9,9 +9,14 @@ Usage:
     python scripts/evaluate_vae.py --checkpoint outputs/vae/best_model.pt
     python scripts/evaluate_vae.py --checkpoint outputs/vae/best_model.pt --visualize-latent
     python scripts/evaluate_vae.py --checkpoint outputs/vae/best_model.pt --interpolate --num-pairs 5
+    python scripts/evaluate_vae.py --checkpoint outputs/vae/best_model.pt --device mps
 """
 
 from __future__ import annotations
+
+# Set MPS memory limit before importing torch (prevents OOM on Apple Silicon)
+import os
+os.environ["PYTORCH_MPS_HIGH_WATERMARK_RATIO"] = "0.0"
 
 import argparse
 import json
@@ -387,14 +392,30 @@ def main():
         help="Run all analyses",
     )
 
+    # Device argument
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        choices=["cpu", "cuda", "mps"],
+        help="Device to use (auto-detected if not specified)",
+    )
+
     args = parser.parse_args()
 
     # Set seeds
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
 
-    # Device
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    # Device selection (auto-detect if not specified)
+    if args.device:
+        device = args.device
+    elif torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     print(f"Using device: {device}")
 
     # Load model

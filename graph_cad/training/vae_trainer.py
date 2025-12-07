@@ -448,7 +448,7 @@ def load_checkpoint(
     """
     from graph_cad.models import GraphVAE
 
-    checkpoint = torch.load(path, map_location=device)
+    checkpoint = torch.load(path, map_location=device, weights_only=False)
     config = checkpoint["config"]
     model = GraphVAE(config)
     model.load_state_dict(checkpoint["model_state_dict"])

@@ -506,3 +506,70 @@ python scripts/evaluate_vae.py --checkpoint outputs/vae/best_model.pt --all
 | Edge MSE | < 0.01 (normalized) |
 | Active latent dims | > 32 of 64 |
 | Interpolation validity | > 95% |
+
+### VAE Training Results
+
+**Training Configuration:**
+- 5000 training samples, 500 val, 500 test
+- 100 epochs, batch size 32
+- Device: Apple M3 GPU (MPS backend)
+- Free bits: 2.0 (prevents posterior collapse)
+- Target beta: 0.1
+
+**Key Finding: Posterior Collapse Prevention**
+
+Initial training with default settings resulted in **posterior collapse** - the VAE ignored the latent space entirely (0/64 active dims). The model learned to predict an "average" graph regardless of input.
+
+**Solution**: Added `--free-bits 2.0` parameter which guarantees minimum information flow through each latent dimension before KL penalty applies.
+
+**Final Results (with free bits + semantic loss):**
+
+| Metric | Result | Target | Status |
+|--------|--------|--------|--------|
+| Node MSE | 0.000882 | < 0.01 | ✅ 11× better |
+| Edge MSE | 0.001246 | < 0.01 | ✅ 8× better |
+| Active dims | 62/64 (97%) | > 32 | ✅ Excellent |
+| Mean ‖z‖ | 3.99 | > 0 | ✅ Active latent |
+
+**Per-Feature Reconstruction Quality:**
+| Feature | MAE | Assessment |
+|---------|-----|------------|
+| face_type | 0.000075 | Excellent |
+| area | 0.020 | Good |
+| direction (x/y/z) | ~0.0002 | Excellent |
+| centroid (x/y/z) | 0.006-0.022 | Good |
+
+**Latent Space Analysis - Parameter Correlations:**
+
+| Parameter | Best Latent Dim | Correlation | Assessment |
+|-----------|-----------------|-------------|------------|
+| leg1_length | dim 25 | r=0.74 | ✅ Strong |
+| leg2_length | dim 53 | r=0.77 | ✅ Strong |
+| hole1_dist | dim 58 | r=0.37 | ⚠️ Moderate |
+| hole2_dist | dim 50 | r=0.45 | ⚠️ Moderate |
+| width | dim 53 | r=0.10 | ❌ Weak |
+| thickness | dim 40 | r=0.10 | ❌ Weak |
+| hole1_diam | dim 54 | r=0.06 | ❌ Weak |
+| hole2_diam | dim 46 | r=0.04 | ❌ Weak |
+
+**Key Insights:**
+
+1. **Reconstruction is excellent** - All metrics significantly exceed targets
+2. **Major geometry well-encoded** - Leg lengths (major features) strongly correlate with individual latent dims
+3. **Small parameters entangled** - Width, thickness, hole diameters don't map to single dimensions
+4. **Semantic loss marginal benefit** - Improved width correlation slightly (0.06→0.10)
+5. **Compression achieved** - 124 graph features → 64 latent dims → reconstructs 8 parameters
+
+**Disentanglement Conclusion:**
+
+The VAE successfully compresses and reconstructs L-bracket geometry, but the latent space is **entangled** (parameters spread across multiple dimensions). True disentanglement would require:
+- β-VAE with higher β
+- FactorVAE or β-TCVAE
+- Explicit supervision on latent structure
+
+For PoC purposes, the current model is sufficient - geometry is captured accurately even if not disentangled. Phase 2 (LLM integration) can reason over the entangled latent space.
+
+**Recommended Training Command:**
+```bash
+python scripts/train_vae.py --epochs 100 --device mps --free-bits 2.0 --target-beta 0.1
+```
