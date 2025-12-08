@@ -1,0 +1,27 @@
+# Cloud GPU requirements for LLM Latent Editor training
+# Tested on: AWS g5.4xlarge (A10G 24GB), A100 40GB
+# Install with: pip install -r requirements-cloud-gpu.txt
+
+# Deep Learning Framework (CUDA version)
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Graph Neural Networks
+torch-geometric>=2.4.0
+
+# Scientific Computing
+numpy>=1.24.0
+tqdm>=4.65.0
+
+# LLM Integration
+transformers>=4.36.0
+peft>=0.7.0
+accelerate>=0.25.0
+bitsandbytes>=0.41.0  # 4-bit/8-bit quantization (requires CUDA)
+
+# Training utilities
+safetensors>=0.4.0
+datasets>=2.14.0
+
+# Testing
+pytest>=7.0.0
