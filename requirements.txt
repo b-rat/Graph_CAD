@@ -6,6 +6,12 @@ torch>=2.0.0
 # Graph Neural Networks
 torch-geometric>=2.4.0
 
+# LLM Integration (for latent editor)
+transformers>=4.36.0
+peft>=0.7.0
+bitsandbytes>=0.41.0
+accelerate>=0.25.0
+
 # Scientific Computing
 # numpy>=1.24.0
 # scipy>=1.11.0

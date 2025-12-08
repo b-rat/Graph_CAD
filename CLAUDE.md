@@ -635,3 +635,122 @@ python scripts/train_vae.py --epochs 100 --device mps --free-bits 2.0 --target-b
 # Alternative: 8D (maximum compression)
 python scripts/train_vae.py --epochs 100 --device mps --free-bits 2.0 --target-beta 0.1 --latent-dim 8
 ```
+
+### Phase 2: LLM Latent Editor (Implemented)
+
+**Status**: Architecture implemented, ready for cloud GPU training
+
+**Goal**: Connect trained 16D VAE to Mistral 7B for natural language-driven CAD editing.
+- Input: "make leg1 50mm longer" + current latent (16D)
+- Output: Edited latent (16D) that decodes to modified geometry
+
+**Architecture:**
+```
+Input: "make leg1 longer" + z_current (16D)
+           |                    |
+    Text Tokenizer    Latent Projector (16D → 4096D)
+           |                    |
+           v                    v
+    [text_tokens]        [latent_token]
+           |                    |
+           +--------+-----------+
+                    |
+                    v
+         [latent_token, text_tokens]
+                    |
+                    v
+          Mistral 7B (LoRA adapters)
+                    |
+                    v
+            Last hidden state
+                    |
+                    v
+         Output Projector (4096D → 16D)
+                    |
+                    v
+              delta_z (predicted)
+                    |
+                    v
+       z_edited = z_current + delta_z
+```
+
+**Key Design Choices:**
+1. **Latent as prepended token** - Single 4096D embedding sufficient for 16D latent
+2. **Delta prediction (residual)** - More stable than absolute; "no change" = zero delta
+3. **QLoRA (4-bit)** - Only ~16M trainable params, ~20GB VRAM requirement
+
+**Components Implemented:**
+
+| File | Purpose |
+|------|---------|
+| `graph_cad/models/latent_editor.py` | `LatentEditor`, `LatentProjector`, `OutputProjector`, `LatentEditorConfig` |
+| `graph_cad/data/edit_dataset.py` | `LatentEditDataset`, instruction templates, collation |
+| `graph_cad/training/edit_trainer.py` | Training utilities, loss functions, checkpointing |
+| `scripts/generate_edit_data.py` | Generate 50k instruction-latent pairs |
+| `scripts/train_latent_editor.py` | Training script with accelerate/QLoRA support |
+| `tests/unit/test_latent_editor.py` | 28 unit tests for new components |
+
+**Training Data Generation:**
+```python
+# Synthetic edit pairs from parameter changes
+bracket_src = LBracket.random(rng)
+bracket_tgt = bracket_src.with_modified("leg1_length", delta=20)
+z_src, z_tgt = vae.encode(bracket_src), vae.encode(bracket_tgt)
+instruction = "make leg1 20mm longer"
+```
+
+**Instruction Templates** (diverse phrasings per parameter):
+- `"make leg1 {delta:+.0f}mm longer/shorter"`
+- `"change width to {value:.0f}mm"`
+- `"set hole1_diameter = {value:.0f}"`
+- Compound: `"make it bigger"`, `"scale up by 20%"`
+- No-op: `"keep it the same"`, `"no changes"`
+
+**Loss Function:**
+```python
+loss = delta_weight * MSE(predicted_delta, target_delta)
+     + graph_weight * MSE(decode(z_pred), decode(z_tgt))  # optional
+```
+
+**Dependencies Added:**
+```
+transformers>=4.36.0
+peft>=0.7.0
+bitsandbytes>=0.41.0
+accelerate>=0.25.0
+```
+
+**Cloud GPU Training Plan:**
+
+1. **Generate training data** (local, uses trained VAE):
+```bash
+python scripts/generate_edit_data.py \
+    --vae-checkpoint outputs/vae_16d/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data
+```
+
+2. **Train editor** (cloud GPU, A10G or A100):
+```bash
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data \
+    --epochs 10 \
+    --batch-size 4 \
+    --gradient-accumulation 8
+```
+
+**GPU Requirements:**
+| Config | VRAM | Estimated Time |
+|--------|------|----------------|
+| QLoRA 4-bit | ~20GB | ~20hrs on A10G |
+| LoRA 16-bit | ~32GB | ~8hrs on A100 |
+
+**Success Metrics:**
+| Metric | Target |
+|--------|--------|
+| Latent Delta MSE | < 0.01 |
+| Parameter Error | < 5% |
+| Instruction Understanding | > 90% correct edit type |
+| "No change" accuracy | delta ≈ 0 |
+
+**Test Coverage:** 125 tests passing (97 existing + 28 new), 59% overall coverage

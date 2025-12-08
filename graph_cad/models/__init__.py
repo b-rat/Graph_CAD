@@ -35,3 +35,26 @@ try:
 except ImportError:
     # PyTorch/PyG not installed
     __all__ = []
+
+# Optional: Latent editor (requires transformers, peft)
+try:
+    from graph_cad.models.latent_editor import (
+        LatentEditor,
+        LatentEditorConfig,
+        LatentProjector,
+        OutputProjector,
+        load_llm_with_lora,
+        create_latent_editor,
+    )
+
+    __all__.extend([
+        "LatentEditor",
+        "LatentEditorConfig",
+        "LatentProjector",
+        "OutputProjector",
+        "load_llm_with_lora",
+        "create_latent_editor",
+    ])
+except ImportError:
+    # transformers/peft not installed
+    pass

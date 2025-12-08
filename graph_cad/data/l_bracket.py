@@ -314,6 +314,84 @@ class LBracket:
             hole2_diameter=hole2_diameter,
         )
 
+    def with_modified(
+        self,
+        param: str,
+        delta: float,
+        clamp: bool = True,
+        ranges: LBracketRanges | None = None,
+    ) -> LBracket:
+        """
+        Create new L-bracket with one parameter modified.
+
+        Args:
+            param: Parameter name to modify (e.g., 'leg1_length', 'width').
+            delta: Amount to add to the parameter value.
+            clamp: If True, clamp to valid ranges. If False, raise on invalid.
+            ranges: Parameter ranges for clamping. Uses defaults if None.
+
+        Returns:
+            New LBracket instance with modified parameter.
+
+        Raises:
+            ValueError: If param is not a valid parameter name.
+            ValueError: If clamp=False and resulting geometry is invalid.
+        """
+        valid_params = [
+            "leg1_length",
+            "leg2_length",
+            "width",
+            "thickness",
+            "hole1_distance",
+            "hole1_diameter",
+            "hole2_distance",
+            "hole2_diameter",
+        ]
+        if param not in valid_params:
+            raise ValueError(
+                f"Unknown parameter '{param}'. Valid: {valid_params}"
+            )
+
+        if ranges is None:
+            ranges = LBracketRanges()
+
+        # Get current parameters
+        params = self.to_dict()
+        new_value = params[param] + delta
+
+        # Clamp to basic range if requested
+        if clamp:
+            if param == "leg1_length":
+                new_value = np.clip(new_value, ranges.leg1_length[0], ranges.leg1_length[1])
+            elif param == "leg2_length":
+                new_value = np.clip(new_value, ranges.leg2_length[0], ranges.leg2_length[1])
+            elif param == "width":
+                # Must be >= 2 * max hole diameter
+                min_width = max(
+                    2 * params["hole1_diameter"],
+                    2 * params["hole2_diameter"],
+                    ranges.width[0],
+                )
+                new_value = np.clip(new_value, min_width, ranges.width[1])
+            elif param == "thickness":
+                new_value = np.clip(new_value, ranges.thickness[0], ranges.thickness[1])
+            elif param == "hole1_diameter":
+                new_value = np.clip(new_value, ranges.hole1_diameter[0], ranges.hole1_diameter[1])
+            elif param == "hole2_diameter":
+                new_value = np.clip(new_value, ranges.hole2_diameter[0], ranges.hole2_diameter[1])
+            elif param == "hole1_distance":
+                # Must be >= diameter and <= leg1_length - thickness - diameter
+                min_dist = params["hole1_diameter"]
+                max_dist = params["leg1_length"] - params["thickness"] - params["hole1_diameter"]
+                new_value = np.clip(new_value, min_dist, max_dist)
+            elif param == "hole2_distance":
+                min_dist = params["hole2_diameter"]
+                max_dist = params["leg2_length"] - params["thickness"] - params["hole2_diameter"]
+                new_value = np.clip(new_value, min_dist, max_dist)
+
+        params[param] = float(new_value)
+        return LBracket.from_dict(params)
+
     def __repr__(self) -> str:
         return (
             f"LBracket("
