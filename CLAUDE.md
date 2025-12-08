@@ -610,9 +610,28 @@ L-brackets have 8 parameters, so we tested 64D, 32D, 16D, and 8D (1:1 with param
 
 **Theoretical Insight:** The L-bracket geometry is fully determined by 8 parameters, so 8D latent is the true information-theoretic minimum. The VAE successfully discovers this compressed representation.
 
-**Recommendation:** Use 8D latent for maximum compression:
+**Interpolation Quality Validation:**
+
+To ensure latent space structure is preserved, we tested interpolation smoothness across multiple sample pairs:
+
+| Latent Dim | Mean Step Variance | vs 64D | Physical Violations |
+|------------|-------------------|--------|---------------------|
+| 8D | 1.74e-07 | 2.8x | 0/55 |
+| 16D | 3.96e-08 | **0.64x** | 0/55 |
+| 64D | 6.21e-08 | 1.0x | 0/55 |
+
+- **8D is valid** — Slightly higher variance but zero physical violations
+- **16D is optimal** — Actually smoother interpolation than 64D!
+- **All produce valid geometry** — Zero area/physical violations
+
+**Recommendation:**
+- Use **16D** for best balance of compression + interpolation quality
+- Use **8D** for maximum compression (acceptable trade-off)
+
 ```bash
+# Recommended: 16D (optimal interpolation)
+python scripts/train_vae.py --epochs 100 --device mps --free-bits 2.0 --target-beta 0.1 --latent-dim 16
+
+# Alternative: 8D (maximum compression)
 python scripts/train_vae.py --epochs 100 --device mps --free-bits 2.0 --target-beta 0.1 --latent-dim 8
 ```
-
-**Alternative:** Use 16D if you want buffer capacity for future feature expansion.
