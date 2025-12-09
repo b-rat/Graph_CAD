@@ -116,6 +116,15 @@ python scripts/train_latent_editor.py \
     --use-4bit
 ```
 
+```bash
+python scripts/train_latent_editor.py \
+      --data-dir data/edit_data \
+      --epochs 10 \
+      --batch-size 8 \
+      --gradient-accumulation 4 \
+      --use-4bit
+```
+
 **Monitor training:**
 ```bash
 # In separate terminal or use tmux
