@@ -45,7 +45,7 @@ cd Graph_CAD
 **Option B: Upload via runpodctl**
 ```bash
 # On local machine
-pip install runpodctl
+brew install runpod/runpodctl/runpodctl
 runpodctl send graph_cad/ scripts/ requirements-cloud-gpu.txt outputs/
 
 # On RunPod, receive files
@@ -86,15 +86,22 @@ python -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}'); 
 python scripts/generate_edit_data.py \
     --vae-checkpoint outputs/vae_16d/best_model.pt \
     --num-samples 50000 \
-    --output-dir data/edit_data
+    --output data/edit_data
 ```
 
 This creates:
-- `data/edit_data/edit_pairs.pt` - Latent pairs and deltas
-- `data/edit_data/instructions.json` - Text instructions
+- `data/edit_data/train.json` - Training samples (40k)
+- `data/edit_data/val.json` - Validation samples (5k)
+- `data/edit_data/test.json` - Test samples (5k)
 - `data/edit_data/metadata.json` - Generation config
 
-**Time:** ~10-15 minutes for 50k samples
+**Dataset composition:**
+- 70% single-parameter edits ("make leg1 20mm longer")
+- 20% compound edits ("make it bigger")
+- 10% no-ops ("keep it the same")
+
+**Time:** ~2 hours (CPU-bound, generates CAD geometry for each sample)
+**Cost:** ~$0.80 on A10G
 
 ## 7. Train Latent Editor
 
@@ -189,10 +196,13 @@ tmux new -s training
 
 ## Estimated Costs
 
-| GPU | Time | Cost |
-|-----|------|------|
-| A10G (24GB) | ~20 hrs | ~$7 |
-| A100 (40GB) | ~8 hrs | ~$8 |
-| A100 (80GB) | ~6 hrs | ~$9 |
+| Step | GPU | Time | Cost |
+|------|-----|------|------|
+| Data generation | A10G | ~2 hrs | ~$0.80 |
+| Training | A10G (24GB) | ~20 hrs | ~$7 |
+| Training | A100 (40GB) | ~8 hrs | ~$8 |
+| Training | A100 (80GB) | ~6 hrs | ~$9 |
+
+**Total (A10G):** ~22 hours, ~$8-9
 
 *Costs are approximate and may vary.*
