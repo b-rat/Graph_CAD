@@ -1,0 +1,75 @@
+{
+  "checkpoint": "outputs/vae_16d/best_model.pt",
+  "epoch": 91,
+  "config": {
+    "latent_dim": 16,
+    "hidden_dim": 64
+  },
+  "basic_metrics": {
+    "loss": 22.040133714675903,
+    "recon_loss": 0.004336301644798368,
+    "kl_loss": 22.035797357559204,
+    "node_mse": 0.0008912280645745341,
+    "edge_mse": 0.001291637985559646,
+    "beta": 1.0
+  },
+  "latent_metrics": {
+    "mean_norm": 2.190664529800415,
+    "mean_std": 0.5120579600334167,
+    "active_dims": 16,
+    "active_dims_ratio": 1.0,
+    "kl_from_prior": 5.564691543579102
+  },
+  "latent_analysis": {
+    "num_samples": 500,
+    "latent_dim": 16,
+    "active_dims": 16,
+    "collapsed_dims": 0,
+    "mean_z_norm": 2.190664529800415,
+    "std_z_norm": 0.8200756311416626,
+    "per_dim_mean_range": [
+      -0.47150084376335144,
+      0.44979211688041687
+    ],
+    "per_dim_std_range": [
+      0.3270399272441864,
+      0.5702332258224487
+    ],
+    "total_kl": 19.885446548461914,
+    "mean_kl_per_dim": 1.2428404092788696,
+    "param_correlations": {
+      "leg1_length": {
+        "best_latent_dim": 7,
+        "correlation": 0.7373701953207763
+      },
+      "leg2_length": {
+        "best_latent_dim": 12,
+        "correlation": -0.7604800570790433
+      },
+      "width": {
+        "best_latent_dim": 2,
+        "correlation": -0.06071227282251731
+      },
+      "thickness": {
+        "best_latent_dim": 15,
+        "correlation": -0.10464794977442404
+      },
+      "hole1_dist": {
+        "best_latent_dim": 7,
+        "correlation": 0.3685690375637515
+      },
+      "hole1_diam": {
+        "best_latent_dim": 15,
+        "correlation": -0.06301735394651659
+      },
+      "hole2_dist": {
+        "best_latent_dim": 12,
+        "correlation": -0.43284358119711114
+      },
+      "hole2_diam": {
+        "best_latent_dim": 2,
+        "correlation": 0.04794805925293475
+      }
+    }
+  }
+}
