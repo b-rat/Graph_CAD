@@ -118,11 +118,13 @@ python scripts/train_latent_editor.py \
 
 ```bash
 python scripts/train_latent_editor.py \
-      --data-dir data/edit_data \
-      --epochs 10 \
-      --batch-size 8 \
-      --gradient-accumulation 4 \
-      --use-4bit
+    --data-dir data/edit_data \
+    --output-dir outputs/latent_editor \
+    --epochs 10 \
+    --batch-size 8 \
+    --gradient-accumulation 4 \
+    --learning-rate 2e-4 \
+    --use-4bit
 ```
 
 **Monitor training:**
