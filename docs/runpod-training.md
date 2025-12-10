@@ -52,20 +52,22 @@ runpodctl send graph_cad/ scripts/ requirements-cloud-gpu.txt outputs/
 runpodctl receive <code-from-send>
 ```
 
-## 4. Upload VAE Checkpoint
+## 4. Install Git LFS and Pull Model Checkpoints
 
-The trained VAE is required to generate training data.
+The VAE checkpoint is stored via Git LFS. You must install LFS to download the actual model files (not just pointers).
 
 ```bash
-# Create output directory on RunPod
-mkdir -p /workspace/Graph_CAD/outputs/vae_16d
+# Install git-lfs
+apt-get update && apt-get install -y git-lfs
 
-# Option A: Use runpodctl from local machine
-runpodctl send outputs/vae_16d/best_model.pt
+# Initialize LFS in the repo
+git lfs install
 
-# Option B: Download from cloud storage (if uploaded)
-# wget <your-cloud-url> -O /workspace/Graph_CAD/outputs/vae_16d/best_model.pt
+# Pull the actual model files
+git lfs pull
 ```
+
+**Note:** Without `git lfs pull`, you'll get a pickle error when loading checkpoints (the files will be small text pointers instead of actual model weights).
 
 ## 5. Install Dependencies
 
@@ -73,6 +75,9 @@ runpodctl send outputs/vae_16d/best_model.pt
 cd /workspace/Graph_CAD
 pip install -r requirements-cloud-gpu.txt
 pip install -e .
+
+# Required for fast model downloads from HuggingFace
+pip install hf_transfer
 ```
 
 **Verify CUDA:**
@@ -105,6 +110,7 @@ This creates:
 
 ## 7. Train Latent Editor
 
+**For A10G (24GB VRAM):**
 ```bash
 python scripts/train_latent_editor.py \
     --data-dir data/edit_data \
@@ -116,6 +122,7 @@ python scripts/train_latent_editor.py \
     --use-4bit
 ```
 
+**For A40/A100 (40GB+ VRAM):**
 ```bash
 python scripts/train_latent_editor.py \
     --data-dir data/edit_data \
@@ -126,6 +133,8 @@ python scripts/train_latent_editor.py \
     --learning-rate 2e-4 \
     --use-4bit
 ```
+
+**Expected output:** ~35M trainable parameters (LoRA adapters + projectors)
 
 **Monitor training:**
 ```bash
@@ -172,6 +181,26 @@ runpodctl send latent_editor_trained.tar.gz
 
 ## Troubleshooting
 
+### Pickle error loading VAE checkpoint
+```
+_pickle.UnpicklingError: invalid load key, 'v'.
+```
+This means Git LFS didn't download the actual model file. Fix:
+```bash
+apt-get update && apt-get install -y git-lfs
+git lfs install
+git lfs pull
+```
+
+### Missing hf_transfer module
+```
+ModuleNotFoundError: No module named 'hf_transfer'
+```
+Fix:
+```bash
+pip install hf_transfer
+```
+
 ### Out of Memory (OOM)
 ```bash
 # Reduce batch size
@@ -190,10 +219,10 @@ export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
 pip uninstall bitsandbytes && pip install bitsandbytes --no-cache-dir
 ```
 
-### Slow data loading
+### Tokenizer parallelism warnings
+Harmless warnings during training. To silence:
 ```bash
-# Increase dataloader workers
---num-workers 4
+export TOKENIZERS_PARALLELISM=false
 ```
 
 ### Connection dropped mid-training
@@ -205,15 +234,45 @@ tmux new -s training
 # Reattach: tmux attach -t training
 ```
 
+### Divergent branches when pulling
+If you get "divergent branches" error after pulling:
+```bash
+git config pull.rebase false
+git pull
+```
+
 ## Estimated Costs
 
 | Step | GPU | Time | Cost |
 |------|-----|------|------|
-| Data generation | A10G | ~2 hrs | ~$0.80 |
+| Data generation | Any | ~2 hrs | ~$0.80 |
 | Training | A10G (24GB) | ~20 hrs | ~$7 |
+| Training | A40 (48GB) | ~7.5 hrs | ~$3 |
 | Training | A100 (40GB) | ~8 hrs | ~$8 |
 | Training | A100 (80GB) | ~6 hrs | ~$9 |
 
-**Total (A10G):** ~22 hours, ~$8-9
+**Tested:** A40 completed 10 epochs in ~7.5 hours (~45 min/epoch)
 
 *Costs are approximate and may vary.*
+
+## Pushing Results to GitHub
+
+To push trained checkpoints back to GitHub from RunPod:
+
+```bash
+# Configure git (required once)
+git config user.email "your@email.com"
+git config user.name "Your Name"
+
+# Add files
+git add -f outputs/latent_editor/best_model.pt
+git add -f outputs/latent_editor/training_results.json
+git commit -m "Add trained latent editor checkpoint"
+
+# Push (requires Personal Access Token, not password)
+git push
+# Username: your-github-username
+# Password: <paste your Personal Access Token>
+```
+
+**Note:** GitHub no longer accepts passwords. Create a Personal Access Token at https://github.com/settings/tokens with `repo` scope.
