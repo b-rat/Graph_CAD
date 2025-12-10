@@ -218,7 +218,8 @@ class LatentEditor(nn.Module):
 
         # 6. Extract last hidden state (at final position)
         # Get the hidden state at the last non-padding position
-        last_hidden = outputs.last_hidden_state  # (batch, seq, hidden)
+        # CausalLMOutputWithPast returns hidden_states tuple, last element is final layer
+        last_hidden = outputs.hidden_states[-1]  # (batch, seq, hidden)
 
         # Find last non-padding position for each sample
         seq_lengths = combined_mask.sum(dim=1) - 1  # -1 for 0-indexing
