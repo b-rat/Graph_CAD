@@ -267,7 +267,7 @@ git remote set-url origin https://YOUR_TOKEN@github.com/username/repo.git
 # Configure git (required once)
 git config user.email "your@email.com"
 git config user.name "Your Name"
-
+h
 # Add files
 git add -f outputs/latent_editor/best_model.pt
 git add -f outputs/latent_editor/training_results.json
