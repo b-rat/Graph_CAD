@@ -14,6 +14,12 @@ Usage:
         --vae-checkpoint outputs/vae_16d/best_model.pt \
         --epochs 50
 
+    # With caching (generates once, reuses on subsequent runs)
+    python scripts/train_feature_regressor.py \
+        --vae-checkpoint outputs/vae_16d/best_model.pt \
+        --cache-dir data/feature_regressor_cache \
+        --epochs 100
+
     # Custom settings
     python scripts/train_feature_regressor.py \
         --vae-checkpoint outputs/vae_16d/best_model.pt \
@@ -54,6 +60,36 @@ from graph_cad.models.parameter_regressor import (
 from graph_cad.training.vae_trainer import load_checkpoint as load_vae_checkpoint
 
 
+def get_cache_path(cache_dir: Path, split: str, num_samples: int, seed: int) -> Path:
+    """Get cache file path for a dataset split."""
+    return cache_dir / f"{split}_{num_samples}_{seed}.pt"
+
+
+def load_cached_dataset(cache_path: Path) -> TensorDataset | None:
+    """Load dataset from cache if it exists."""
+    if cache_path.exists():
+        print(f"  Loading from cache: {cache_path}")
+        data = torch.load(cache_path, weights_only=True)
+        return TensorDataset(data["node_features"], data["edge_features"], data["params"])
+    return None
+
+
+def save_cached_dataset(dataset: TensorDataset, cache_path: Path) -> None:
+    """Save dataset to cache."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    # Extract tensors from TensorDataset
+    node_features, edge_features, params = dataset.tensors
+    torch.save(
+        {
+            "node_features": node_features,
+            "edge_features": edge_features,
+            "params": params,
+        },
+        cache_path,
+    )
+    print(f"  Saved to cache: {cache_path}")
+
+
 def prepare_dataset(
     vae,
     num_samples: int,
@@ -61,12 +97,23 @@ def prepare_dataset(
     seed: int,
     device: str,
     desc: str = "Preparing",
+    cache_dir: Path | None = None,
+    split: str = "train",
 ) -> TensorDataset:
     """
     Generate dataset by encoding/decoding L-bracket graphs through VAE.
 
     Returns TensorDataset with (node_features, edge_features, parameters).
+
+    If cache_dir is provided, will load from cache if available or save after generation.
     """
+    # Check cache first
+    if cache_dir is not None:
+        cache_path = get_cache_path(cache_dir, split, num_samples, seed)
+        cached = load_cached_dataset(cache_path)
+        if cached is not None:
+            return cached
+
     # Create data loaders for graph generation
     train_loader, _, _ = create_data_loaders(
         train_size=num_samples,
@@ -112,7 +159,13 @@ def prepare_dataset(
     edge_features = torch.cat(all_edge_features, dim=0)
     params = torch.cat(all_params, dim=0)
 
-    return TensorDataset(node_features, edge_features, params)
+    dataset = TensorDataset(node_features, edge_features, params)
+
+    # Save to cache if requested
+    if cache_dir is not None:
+        save_cached_dataset(dataset, cache_path)
+
+    return dataset
 
 
 def train_epoch(
@@ -265,6 +318,14 @@ def main():
         help="Output directory",
     )
 
+    # Caching
+    parser.add_argument(
+        "--cache-dir",
+        type=str,
+        default=None,
+        help="Directory to cache generated datasets. If provided, will load from cache if available.",
+    )
+
     # Device
     parser.add_argument(
         "--device",
@@ -304,22 +365,30 @@ def main():
         param.requires_grad = False
     print(f"  VAE latent dim: {vae.config.latent_dim}")
 
+    # Parse cache directory
+    cache_dir = Path(args.cache_dir) if args.cache_dir else None
+    if cache_dir:
+        print(f"Cache directory: {cache_dir}")
+
     # Generate datasets
     print(f"\nGenerating training data ({args.train_size} samples)...")
     start_time = time.time()
     train_dataset = prepare_dataset(
-        vae, args.train_size, args.batch_size, args.seed, device, "Train data"
+        vae, args.train_size, args.batch_size, args.seed, device, "Train data",
+        cache_dir=cache_dir, split="train"
     )
-    print(f"  Generated in {time.time() - start_time:.1f}s")
+    print(f"  Completed in {time.time() - start_time:.1f}s")
 
     print(f"Generating validation data ({args.val_size} samples)...")
     val_dataset = prepare_dataset(
-        vae, args.val_size, args.batch_size, args.seed + 1000, device, "Val data"
+        vae, args.val_size, args.batch_size, args.seed + 1000, device, "Val data",
+        cache_dir=cache_dir, split="val"
     )
 
     print(f"Generating test data ({args.test_size} samples)...")
     test_dataset = prepare_dataset(
-        vae, args.test_size, args.batch_size, args.seed + 2000, device, "Test data"
+        vae, args.test_size, args.batch_size, args.seed + 2000, device, "Test data",
+        cache_dir=cache_dir, split="test"
     )
 
     # Create data loaders
