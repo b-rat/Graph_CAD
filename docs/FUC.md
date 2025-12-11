@@ -66,3 +66,9 @@ python scripts/infer_latent_editor.py \
       --instruction "make leg1 20mm longer" \
       --verbose
 ```
+
+```bash
+python scripts/infer_latent_editor.py --random-bracket --instruction "make it wider" --verbose
+python scripts/infer_latent_editor.py --random-bracket --instruction "increase hole1 diameter by 3mm" --verbose
+python scripts/infer_latent_editor.py --random-bracket --instruction "make leg2 shorter" --verbose
+```
