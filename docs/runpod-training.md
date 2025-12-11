@@ -260,6 +260,10 @@ git pull
 To push trained checkpoints back to GitHub from RunPod:
 
 ```bash
+# Restart pod session from network volume
+cd /workspace/your-repo-name
+git remote set-url origin https://YOUR_TOKEN@github.com/username/repo.git
+
 # Configure git (required once)
 git config user.email "your@email.com"
 git config user.name "Your Name"
