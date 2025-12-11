@@ -889,7 +889,8 @@ For cloud GPU training on RunPod A40:
 1. **FeatureRegressor** (~10 min):
    ```bash
    python scripts/train_feature_regressor.py \
-       --vae-checkpoint outputs/vae_16d/best_model.pt \
+       --vae-checkpoint outputs/vae_16d_lowbeta/best_model.pt \
+       --cache-dir data/feature_regressor_cache \
        --train-size 10000 --epochs 100
    ```
 
@@ -900,3 +901,57 @@ For cloud GPU training on RunPod A40:
        --instruction "make leg1 20mm longer" \
        --verbose
    ```
+
+### VAE Reconstruction Analysis
+
+**Key Finding**: The VAE's β parameter critically affects reconstruction quality for downstream parameter prediction.
+
+**Problem Discovered**: With the original β=0.1, the VAE exhibited severe **variance collapse** - reconstructed features retained only 1.8% of area variance and 11.1% of edge_length variance. This caused the FeatureRegressor to achieve only ~15mm MAE instead of the expected ~5mm.
+
+**β Parameter Ablation Study**:
+
+| VAE Config | area | cent_x | cent_z | edge_len | GNN MAE |
+|------------|------|--------|--------|----------|---------|
+| 16D β=0.1 | 1.8% | 49.0% | 53.2% | 11.1% | ~15mm |
+| **16D β=0.01** | **89.2%** | **57.5%** | **60.2%** | **79.0%** | **~12.9mm** |
+| 16D β=0.001 | 85.5% | 59.4% | 63.1% | 76.9% | ~12.9mm |
+| 32D β=0.01 | 87.5% | 57.5% | 60.2% | 78.3% | ~12.9mm |
+
+**Key Insights**:
+
+1. **β=0.01 is optimal** - 10× reduction from default dramatically improves variance retention
+2. **Further β reduction doesn't help** - β=0.001 shows no improvement over β=0.01
+3. **Latent dimension doesn't help** - 32D performs same as 16D, bottleneck is elsewhere
+4. **~12mm MAE is the VAE's reconstruction limit** - Even the GNN regressor (which achieves 5mm on original features) gets 12.9mm on VAE-reconstructed features
+
+**Best VAE Checkpoint**: `outputs/vae_16d_lowbeta/best_model.pt`
+
+**Remaining Gap Analysis**:
+- GNN on original features: ~5mm MAE
+- GNN on VAE-reconstructed features: ~12.9mm MAE
+- FeatureRegressor on VAE-reconstructed: ~12.4mm MAE
+
+The FeatureRegressor performs at the theoretical limit given the VAE reconstruction quality. The ~8mm gap between original and reconstructed is information lost during VAE encode/decode, not a regressor limitation.
+
+**Per-Parameter FeatureRegressor Results** (with β=0.01 VAE):
+
+| Parameter | MAE (mm) | Range (mm) | Error % |
+|-----------|----------|------------|---------|
+| leg1_length | 16.9 | 150 | 11% |
+| leg2_length | 16.8 | 150 | 11% |
+| width | 5.6 | 40 | 14% |
+| thickness | 2.3 | 9 | 25% |
+| hole1_distance | 26.8 | ~165 | 16% |
+| hole1_diameter | 2.1 | 8 | 26% |
+| hole2_distance | 26.6 | ~165 | 16% |
+| hole2_diameter | 2.0 | 8 | 25% |
+
+**Recommended VAE Training Command**:
+```bash
+python scripts/train_vae.py \
+    --epochs 100 \
+    --latent-dim 16 \
+    --target-beta 0.01 \
+    --free-bits 2.0 \
+    --output-dir outputs/vae_16d_lowbeta
+```
