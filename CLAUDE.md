@@ -126,7 +126,7 @@ The β parameter controls the trade-off between reconstruction fidelity and late
 
 **Production checkpoints:**
 - `outputs/vae_16d_lowbeta/best_model.pt` — VAE (16D, β=0.01)
-- `outputs/latent_editor/best_model.pt` — LLM Latent Editor
+- `outputs/latent_editor_vae16d_lowbeta/best_model.pt` — LLM Latent Editor
 - `outputs/feature_regressor/best_model.pt` — FeatureRegressor
 
 ## Training Commands
@@ -187,7 +187,7 @@ python scripts/infer_latent_editor.py \
 - **Base model**: Mistral 7B with QLoRA (4-bit)
 - **Input**: Latent token (16D → 4096D) + text instruction
 - **Output**: Delta prediction (residual editing)
-- **Performance**: Delta MSE 0.0038, ~1% error per latent dimension
+- **Performance**: Delta MSE 0.006, Delta MAE 0.036 (~3.6% error per latent dimension)
 
 ## MVP Expansion Path
 
@@ -210,7 +210,7 @@ Based on experimental findings:
 | VAE Edge MSE | < 0.01 | 0.001 |
 | VAE Active Dims | > 50% | 100% (16/16) |
 | Parameter MAE | < 15mm | ~12mm |
-| LLM Delta MSE | < 0.01 | 0.004 |
+| LLM Delta MSE | < 0.01 | 0.006 |
 | Interpolation Valid | > 95% | 100% |
 
 **Note**: Original target of <1% parameter error was unrealistic. The ~12mm MAE (~10-15% error) represents the VAE's information bottleneck, not model failure. For practical editing, relative changes ("make it bigger") work well even with absolute parameter uncertainty.
