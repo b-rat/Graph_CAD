@@ -295,13 +295,13 @@ def main():
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_16d/best_model.pt",
+        default="outputs/vae_16d_lowbeta/best_model.pt",
         help="Path to trained VAE checkpoint",
     )
     parser.add_argument(
         "--editor-checkpoint",
         type=str,
-        default="outputs/latent_editor/best_model.pt",
+        default="outputs/latent_editor_vae16d_lowbeta/best_model.pt",
         help="Path to trained Latent Editor checkpoint",
     )
     parser.add_argument(
@@ -517,6 +517,7 @@ def main():
     regressor_path = Path(args.regressor_checkpoint)
     orig_params_pred = None
     edit_params_pred = None
+    predicted_original_bracket = None
     edited_bracket = None
 
     if regressor_path.exists():
@@ -557,6 +558,23 @@ def main():
                 error = pred_val - gt_val
                 print(f"  {name:<20} GT={gt_val:>8.2f}  Pred={pred_val:>8.2f}  Err={error:>+6.2f}")
 
+        # Create predicted original L-bracket from VAE-reconstructed parameters
+        predicted_original_bracket = None
+        try:
+            predicted_original_bracket = LBracket(
+                leg1_length=float(orig_params_pred[0]),
+                leg2_length=float(orig_params_pred[1]),
+                width=float(orig_params_pred[2]),
+                thickness=float(orig_params_pred[3]),
+                hole1_distance=float(orig_params_pred[4]),
+                hole1_diameter=float(orig_params_pred[5]),
+                hole2_distance=float(orig_params_pred[6]),
+                hole2_diameter=float(orig_params_pred[7]),
+            )
+            print("\n  Successfully created predicted original L-bracket geometry!")
+        except ValueError as e:
+            print(f"\n  Warning: Could not create predicted original L-bracket: {e}")
+
         # Create edited L-bracket from predicted parameters
         try:
             edited_bracket = LBracket(
@@ -569,7 +587,7 @@ def main():
                 hole2_distance=float(edit_params_pred[6]),
                 hole2_diameter=float(edit_params_pred[7]),
             )
-            print("\n  Successfully created edited L-bracket geometry!")
+            print("  Successfully created edited L-bracket geometry!")
         except ValueError as e:
             print(f"\n  Warning: Could not create valid L-bracket from predicted params: {e}")
             edited_bracket = None
@@ -632,6 +650,12 @@ def main():
             json.dump(graph_data, f, indent=2)
         print(f"  Saved graph features to: {graph_path}")
 
+    # Save predicted original STEP file (for apples-to-apples comparison with edited)
+    if predicted_original_bracket is not None:
+        pred_orig_step_path = output_dir / "predicted_original.step"
+        predicted_original_bracket.to_step(str(pred_orig_step_path))
+        print(f"  Saved predicted original STEP to: {pred_orig_step_path}")
+
     # Save edited STEP file
     if edited_bracket is not None:
         edited_step_path = output_dir / "edited.step"
@@ -659,8 +683,14 @@ def main():
 
     if orig_params_pred is not None and edit_params_pred is not None:
         param_changes = edit_params_pred - orig_params_pred
-        max_change_idx = np.argmax(np.abs(param_changes))
-        print(f"  Largest param change: {PARAMETER_NAMES[max_change_idx]} = {param_changes[max_change_idx]:+.2f}mm")
+
+        # Show all parameter changes in logical order
+        print("\n  Parameter Changes:")
+        print("  " + "-" * 50)
+        print(f"  {'Parameter':<20} {'Original':>10} {'Edited':>10} {'Δ':>10}")
+        print("  " + "-" * 50)
+        for i, name in enumerate(PARAMETER_NAMES):
+            print(f"  {name:<20} {orig_params_pred[i]:>10.2f} {edit_params_pred[i]:>10.2f} {param_changes[i]:>+10.2f}")
 
 
 if __name__ == "__main__":

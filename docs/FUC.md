@@ -13,7 +13,8 @@ python scripts/train_latent_editor.py \
 
 ```bash
 cd /workspace/Graph_CAD
-git remote set-url origin https://YOUR_TOKEN@github.com/b-rat/Graph_CAD.git
+GIT_TOKEN={{ RUNPOD_SECRET_GIT_TOKEN }}
+git remote set-url origin https://GIT_TOKEN@github.com/b-rat/Graph_CAD.git
 git config user.email "brian.ratliff@mechnlengr.com"
 git config user.name "b-rat"
 git pull
@@ -59,3 +60,9 @@ tmux attach -s training
 tmux attach # if only one session
 ```
 
+```bash
+python scripts/infer_latent_editor.py \
+      --random-bracket \
+      --instruction "make leg1 20mm longer" \
+      --verbose
+```
