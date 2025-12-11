@@ -81,9 +81,8 @@ class FeatureRegressor(nn.Module):
             layers.append(nn.Dropout(config.dropout))
             in_dim = hidden_dim
 
-        # Output layer with sigmoid to constrain outputs to [0, 1]
+        # Output layer (no activation - clamp at inference for valid ranges)
         layers.append(nn.Linear(in_dim, config.num_parameters))
-        layers.append(nn.Sigmoid())
 
         self.mlp = nn.Sequential(*layers)
 

@@ -72,3 +72,10 @@ python scripts/infer_latent_editor.py --random-bracket --instruction "make it wi
 python scripts/infer_latent_editor.py --random-bracket --instruction "increase hole1 diameter by 3mm" --verbose
 python scripts/infer_latent_editor.py --random-bracket --instruction "make leg2 shorter" --verbose
 ```
+
+```bash
+python scripts/train_feature_regressor.py \
+      --vae-checkpoint outputs/vae_16d_lowbeta/best_model.pt \
+      --cache-dir data/feature_regressor_cache \
+      --train-size 10000 --epochs 100
+```

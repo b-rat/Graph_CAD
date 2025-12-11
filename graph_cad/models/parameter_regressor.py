@@ -211,7 +211,7 @@ def normalize_parameters(params: torch.Tensor, ranges: dict | None = None) -> to
 
 
 def denormalize_parameters(
-    params: torch.Tensor, ranges: dict | None = None
+    params: torch.Tensor, ranges: dict | None = None, clamp: bool = True
 ) -> torch.Tensor:
     """
     Denormalize parameters from [0, 1] to original ranges.
@@ -219,12 +219,17 @@ def denormalize_parameters(
     Args:
         params: Normalized parameter tensor, shape (..., 8).
         ranges: Dictionary of (min, max) tuples per parameter.
+        clamp: If True, clamp inputs to [0, 1] before denormalizing.
 
     Returns:
         Denormalized parameters in mm.
     """
     if ranges is None:
         ranges = DEFAULT_PARAM_RANGES
+
+    # Clamp to valid range to prevent impossible parameter values
+    if clamp:
+        params = torch.clamp(params, 0.0, 1.0)
 
     mins = torch.tensor(
         [ranges[name][0] for name in PARAMETER_NAMES],
