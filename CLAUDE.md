@@ -792,3 +792,111 @@ python scripts/train_latent_editor.py \
 - Inference testing with real edit instructions
 - Decode edited latents through VAE to verify geometry changes
 - Evaluate on held-out test set
+
+### Feature Regressor (Decoded Features → Parameters)
+
+**Status**: Implemented, ready for cloud training
+
+**Problem**: The VAE decoder outputs graph features (10×8 nodes + 22×2 edges = 124 values), but we need the 8 L-bracket parameters to generate actual STEP files.
+
+**Solution**: FeatureRegressor - a lightweight MLP that maps decoded features → parameters.
+
+**Why not use the existing GNN-based ParameterRegressor?**
+- The GNN regressor takes a real BRepGraph with adjacency structure (edge_index)
+- VAE decoder outputs only feature tensors, not graph structure
+- For fixed topology (L-brackets), a simpler MLP is sufficient
+
+**Architecture:**
+```
+Decoded Features (124D) → MLP → 8 Parameters
+
+MLP layers: 124 → 256 → 128 → 64 → 8
+With BatchNorm, ReLU, Dropout between layers
+~75k trainable parameters
+```
+
+**Files:**
+- `graph_cad/models/feature_regressor.py` — `FeatureRegressor`, `FeatureRegressorConfig`, load/save utilities
+- `scripts/train_feature_regressor.py` — Training script with per-parameter metrics
+- `scripts/infer_latent_editor.py` — Updated with full pipeline including parameter prediction
+
+**Training:**
+```bash
+# Cloud GPU (A40)
+python scripts/train_feature_regressor.py \
+    --vae-checkpoint outputs/vae_16d/best_model.pt \
+    --train-size 10000 \
+    --val-size 1000 \
+    --test-size 1000 \
+    --epochs 100 \
+    --output-dir outputs/feature_regressor
+```
+
+**Expected Performance:** Based on the GNN regressor results (~7% error), the FeatureRegressor should achieve similar or better accuracy since it operates on VAE-reconstructed features which have <0.1% reconstruction error.
+
+### Full Inference Pipeline
+
+**Status**: Implemented and tested locally
+
+The complete pipeline for natural language CAD editing:
+
+```
+Input STEP → Graph Extraction → VAE Encode → Latent (16D)
+                                                ↓
+                            LLM Latent Editor (instruction)
+                                                ↓
+                                         Edited Latent
+                                                ↓
+                              VAE Decode → Graph Features
+                                                ↓
+                      FeatureRegressor → 8 Parameters
+                                                ↓
+                            LBracket.to_solid() → Output STEP
+```
+
+**Usage:**
+```bash
+# Full inference (requires trained FeatureRegressor)
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 20mm longer" \
+    --regressor-checkpoint outputs/feature_regressor/best_model.pt \
+    --output outputs/inference/edited.step
+
+# VAE-only mode (skip LLM, for testing)
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "test" \
+    --vae-only --verbose
+
+# From existing STEP file
+python scripts/infer_latent_editor.py \
+    --input data/raw/bracket_001.step \
+    --instruction "increase hole diameters" \
+    --output edited.step
+```
+
+**Output includes:**
+- Original and edited STEP files
+- Predicted parameters comparison table
+- Latent vector changes
+- Graph feature differences (with --verbose)
+
+### RunPod Training Sequence
+
+For cloud GPU training on RunPod A40:
+
+1. **FeatureRegressor** (~10 min):
+   ```bash
+   python scripts/train_feature_regressor.py \
+       --vae-checkpoint outputs/vae_16d/best_model.pt \
+       --train-size 10000 --epochs 100
+   ```
+
+2. **Full inference test**:
+   ```bash
+   python scripts/infer_latent_editor.py \
+       --random-bracket \
+       --instruction "make leg1 20mm longer" \
+       --verbose
+   ```

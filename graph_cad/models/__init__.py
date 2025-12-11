@@ -17,15 +17,26 @@ try:
         GraphVAEEncoder,
         GraphVAEDecoder,
     )
+    from graph_cad.models.feature_regressor import (
+        FeatureRegressor,
+        FeatureRegressorConfig,
+        load_feature_regressor,
+        save_feature_regressor,
+    )
 
     __all__ = [
-        # Parameter regressor
+        # Parameter regressor (GNN-based)
         "ParameterRegressor",
         "ParameterRegressorConfig",
         "PARAMETER_NAMES",
         "brep_graph_to_pyg",
         "normalize_parameters",
         "denormalize_parameters",
+        # Feature regressor (MLP-based, for VAE decoded features)
+        "FeatureRegressor",
+        "FeatureRegressorConfig",
+        "load_feature_regressor",
+        "save_feature_regressor",
         # Graph VAE
         "GraphVAE",
         "GraphVAEConfig",
