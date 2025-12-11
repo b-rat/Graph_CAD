@@ -27,8 +27,35 @@ git add -f outputs/latent_editor/best_model.pt
 git add -f outputs/latent_editor/training_results.json
 git commit -m "Add trained latent editor checkpoint"
 git push
+git reset                   #unstage everything add file name to unstage single file
+git reset --soft HEAD~1     #keep changes staged remove commit one commit back
+git reset HEAD~1            #remove commit and unstage
 ```
 
+```bash
+python scripts/train_latent_editor.py \
+      --data-dir data/edit_data \
+      --epochs 10 \
+      --batch-size 8 \
+      --gradient-accumulation 4 \
+      --resume outputs/latent_editor/checkpoint_epoch_9.pt
+```
 
+```bash
+# Start a new named session
+tmux new -s training
 
+# You're now "inside" tmux - run your stuff
+python finetune.py
+
+# Detach (leaves it running in background)
+Ctrl+B, then D
+
+# List running sessions
+tmux ls
+
+# Reattach to your session
+tmux attach -s training
+tmux attach # if only one session
+```
 
