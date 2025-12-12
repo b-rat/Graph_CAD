@@ -211,6 +211,7 @@ data/raw/
 data/processed/
 data/models/
 outputs/
+outputs_251211
 *.pt
 *.pth
 *.ckpt
