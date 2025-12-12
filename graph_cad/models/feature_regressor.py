@@ -81,7 +81,7 @@ class FeatureRegressor(nn.Module):
             layers.append(nn.Dropout(config.dropout))
             in_dim = hidden_dim
 
-        # Output layer (no activation - clamp at inference for valid ranges)
+        # Output layer
         layers.append(nn.Linear(in_dim, config.num_parameters))
 
         self.mlp = nn.Sequential(*layers)
