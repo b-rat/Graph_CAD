@@ -122,6 +122,59 @@ The β parameter controls the trade-off between reconstruction fidelity and late
 
 **Use 16D** for best balance of compression and interpolation.
 
+### Inference Robustness Issues (Dec 2024)
+
+**Critical Discovery**: End-to-end inference shows inconsistent results across different input brackets.
+
+#### Test Results (8 random brackets, instruction: "make leg1 20mm longer")
+
+| Outcome | Count | Notes |
+|---------|-------|-------|
+| Wrong direction | 5/8 | leg1 decreased instead of increased |
+| Right direction, weak | 2/8 | Only 10-22% of requested magnitude |
+| No change | 1/8 | Essentially zero effect |
+| Correct | 0/8 | None achieved +20mm |
+
+#### FeatureRegressor Coupling
+
+The LLM and FeatureRegressor are **indirectly coupled** through VAE features:
+
+```
+LLM Training:                          Inference:
+bracket_src → VAE → z_src              z_src → LLM → delta_z
+bracket_tgt → VAE → z_tgt              z_edited = z_src + delta_z
+delta = z_tgt - z_src                  VAE.decode(z_edited) → features
+Train: (z_src, instruction) → delta    FeatureRegressor(features) → params
+                                       LBracket(**params) → STEP
+```
+
+The LLM learns deltas that cause certain **feature changes**. The FeatureRegressor interprets those features as **parameter values**. If the regressor is retrained, it may interpret the same features differently, breaking the implicit coupling.
+
+#### FeatureRegressor Constraints
+
+Attempted fixes for out-of-range predictions (values outside [0,1]):
+
+| Approach | Result |
+|----------|--------|
+| Sigmoid output | Vanishing gradients, training didn't converge |
+| Clamping in denormalize | Training worked, but gradient interpretation changed |
+| No constraint | Can produce impossible params (e.g., -368mm leg length) |
+
+**Current state**: No constraint (original architecture). Occasional impossible values are accepted as a PoC limitation.
+
+#### Root Causes
+
+1. **Entangled latent space** — No clear "make leg1 longer" direction
+2. **FeatureRegressor sensitivity** — Retraining produces different gradient behavior
+3. **LLM training data** — 50k samples may not cover latent space uniformly
+4. **VAE bottleneck** — ~12mm reconstruction error compounds with edit errors
+
+#### Lessons Learned
+
+- **Checkpoint management**: Always backup working checkpoints before modifications
+- **Component coupling**: LLM + FeatureRegressor must be kept in sync or trained jointly
+- **Robustness testing**: Test across multiple random inputs, not just one seed
+
 ## Model Checkpoints
 
 **Production checkpoints:**

@@ -74,16 +74,9 @@ python scripts/infer_latent_editor.py --random-bracket --instruction "make leg2 
 ```
 
 ```bash
-python scripts/train_feature_regressor.py \
-      --vae-checkpoint outputs/vae_16d_lowbeta/best_model.pt \
-      --cache-dir data/feature_regressor_cache \
-      --train-size 10000 --epochs 100
-```
-
-```bash
-rm -rf outputs/inference && python scripts/infer_latent_editor.py \
-      --random-bracket \
-      --instruction "make leg1 20mm longer" \
-      --seed 42 \
-      --verbose
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 20mm longer" \
+    --seed $RANDOM \
+    --verbose
 ```
