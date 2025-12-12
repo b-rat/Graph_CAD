@@ -529,12 +529,26 @@ def main():
             orig_node_t = torch.tensor(orig_node_recon, dtype=torch.float32, device=device).unsqueeze(0)
             orig_edge_t = torch.tensor(orig_edge_recon, dtype=torch.float32, device=device).unsqueeze(0)
             orig_params_norm = regressor(orig_node_t, orig_edge_t)
+
+            # Debug: check if clamping affects values
+            orig_raw = orig_params_norm.cpu().numpy().flatten()
+            orig_clamped = (orig_raw < 0).any() or (orig_raw > 1).any()
+            if orig_clamped:
+                print(f"\n  WARNING: Original params outside [0,1]: min={orig_raw.min():.3f}, max={orig_raw.max():.3f}")
+
             orig_params_pred = denormalize_parameters(orig_params_norm).cpu().numpy().flatten()
 
             # Edited
             edit_node_t = torch.tensor(edit_node_recon, dtype=torch.float32, device=device).unsqueeze(0)
             edit_edge_t = torch.tensor(edit_edge_recon, dtype=torch.float32, device=device).unsqueeze(0)
             edit_params_norm = regressor(edit_node_t, edit_edge_t)
+
+            # Debug: check if clamping affects values
+            edit_raw = edit_params_norm.cpu().numpy().flatten()
+            edit_clamped = (edit_raw < 0).any() or (edit_raw > 1).any()
+            if edit_clamped:
+                print(f"  WARNING: Edited params outside [0,1]: min={edit_raw.min():.3f}, max={edit_raw.max():.3f}")
+
             edit_params_pred = denormalize_parameters(edit_params_norm).cpu().numpy().flatten()
 
         print("\n  Predicted Parameters (mm):")
