@@ -587,3 +587,237 @@ INFERENCE COMPLETE
   hole1_diameter             7.90       7.95      +0.04
   hole2_distance            64.19      58.75      -5.45
   hole2_diameter             8.02       8.01      -0.01
+
+___________
+New training 12/12/2025 - retrained end-to-end with BKM
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg1 20mm longer"
+  Delta magnitude: 0.0919
+  Graph change: node_MSE=0.000001, edge_MSE=0.000005
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              154.64     155.98      +1.34
+  leg2_length              120.82     123.82      +3.00
+  width                     43.36      43.23      -0.13
+  thickness                  7.41       7.42      +0.02
+  hole1_distance            74.89      75.35      +0.46
+  hole1_diameter             7.96       7.98      +0.02
+  hole2_distance            55.41      56.82      +1.41
+  hole2_diameter             8.07       8.08      +0.02
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg1 20mm longer"
+  Delta magnitude: 0.8713
+  Graph change: node_MSE=0.000300, edge_MSE=0.001487
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length               68.65      87.40     +18.76
+  leg2_length               95.67      96.03      +0.35
+  width                     49.30      47.01      -2.29
+  thickness                  7.54       7.46      -0.08
+  hole1_distance            30.16      38.23      +8.07
+  hole1_diameter             7.98       7.97      -0.01
+  hole2_distance            44.25      44.69      +0.44
+  hole2_diameter             8.04       7.96      -0.08
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg1 20mm longer"
+  Delta magnitude: 0.3198
+  Graph change: node_MSE=0.000034, edge_MSE=0.000185
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              113.45     124.89     +11.45
+  leg2_length               87.40      88.16      +0.76
+  width                     47.48      47.75      +0.27
+  thickness                  7.65       7.64      -0.01
+  hole1_distance            52.02      58.48      +6.47
+  hole1_diameter             8.05       8.07      +0.01
+  hole2_distance            40.06      40.31      +0.26
+  hole2_diameter             7.94       7.96      +0.02
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg1 20mm longer"
+  Delta magnitude: 0.1292
+  Graph change: node_MSE=0.000003, edge_MSE=0.000017
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              135.49     142.66      +7.18
+  leg2_length              150.89     154.39      +3.50
+  width                     45.27      44.96      -0.31
+  thickness                  7.49       7.54      +0.05
+  hole1_distance            62.55      66.31      +3.76
+  hole1_diameter             7.95       8.00      +0.05
+  hole2_distance            70.07      71.62      +1.56
+  hole2_diameter             8.03       8.07      +0.04
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg1 20mm longer"
+  Delta magnitude: 0.0848
+  Graph change: node_MSE=0.000000, edge_MSE=0.000002
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              152.59     153.45      +0.86
+  leg2_length              111.51     112.40      +0.89
+  width                     43.46      43.25      -0.21
+  thickness                  7.39       7.38      -0.01
+  hole1_distance            74.15      74.60      +0.45
+  hole1_diameter             7.95       7.95      +0.00
+  hole2_distance            51.13      51.53      +0.40
+  hole2_diameter             8.04       8.05      +0.00
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg2 20mm longer"
+  Delta magnitude: 0.1824
+  Graph change: node_MSE=0.000011, edge_MSE=0.000063
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              119.19     128.25      +9.06
+  leg2_length               65.57      65.55      -0.02
+  width                     50.98      50.93      -0.05
+  thickness                  7.67       7.65      -0.02
+  hole1_distance            55.27      59.76      +4.49
+  hole1_diameter             8.01       8.03      +0.02
+  hole2_distance            28.62      28.57      -0.05
+  hole2_diameter             7.91       7.92      +0.02
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg2 20mm longer"
+  Delta magnitude: 0.1894
+  Graph change: node_MSE=0.000010, edge_MSE=0.000062
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length               82.68      86.55      +3.87
+  leg2_length               92.92      95.53      +2.61
+  width                     47.25      47.08      -0.17
+  thickness                  7.46       7.46      -0.00
+  hole1_distance            35.92      37.80      +1.88
+  hole1_diameter             7.96       7.97      +0.01
+  hole2_distance            43.35      44.48      +1.12
+  hole2_diameter             7.97       7.96      -0.01
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg2 20mm longer"
+  Delta magnitude: 0.1748
+  Graph change: node_MSE=0.000006, edge_MSE=0.000041
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              116.22     119.96      +3.74
+  leg2_length               92.96      96.94      +3.98
+  width                     46.62      46.35      -0.28
+  thickness                  7.60       7.56      -0.03
+  hole1_distance            53.55      55.64      +2.09
+  hole1_diameter             8.04       8.04      +0.00
+  hole2_distance            42.84      44.67      +1.83
+  hole2_diameter             7.94       7.97      +0.03
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg2 20mm longer"
+  Delta magnitude: 0.0992
+  Graph change: node_MSE=0.000002, edge_MSE=0.000010
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length               69.35      71.02      +1.67
+  leg2_length              165.65     164.05      -1.60
+  width                     36.55      36.97      +0.42
+  thickness                  7.48       7.46      -0.02
+  hole1_distance            30.55      31.43      +0.89
+  hole1_diameter             8.17       8.15      -0.02
+  hole2_distance            78.88      77.98      -0.90
+  hole2_diameter             8.10       8.09      -0.01
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg2 20mm longer"
+  Delta magnitude: 0.0591
+  Graph change: node_MSE=0.000000, edge_MSE=0.000001
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              168.91     167.93      -0.98
+  leg2_length              166.42     164.41      -2.02
+  width                     26.48      26.96      +0.48
+  thickness                  7.48       7.47      -0.00
+  hole1_distance            81.56      80.95      -0.61
+  hole1_diameter             8.09       8.09      +0.01
+  hole2_distance            78.93      77.86      -1.07
+  hole2_diameter             7.94       7.95      +0.01
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make leg2 20mm longer"
+  Delta magnitude: 0.1960
+  Graph change: node_MSE=0.000011, edge_MSE=0.000062
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              133.93     138.09      +4.16
+  leg2_length              105.90     114.34      +8.45
+  width                     45.46      45.32      -0.14
+  thickness                  7.49       7.48      -0.00
+  hole1_distance            63.71      65.48      +1.77
+  hole1_diameter             7.96       7.97      +0.01
+  hole2_distance            48.48      52.55      +4.07
+  hole2_diameter             7.97       8.01      +0.04
