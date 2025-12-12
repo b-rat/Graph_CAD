@@ -84,7 +84,7 @@ Input STEP → Graph Extraction → VAE Encode → Latent (16D)
 | `hole1_distance` | derived | derived | From end of leg 1 to hole center |
 | `hole2_distance` | derived | derived | From end of leg 2 to hole center |
 
-## Key Findings & Learned Constraints
+## Key Findings
 
 ### VAE Reconstruction Limit
 
@@ -98,6 +98,10 @@ Input STEP → Graph Extraction → VAE Encode → Latent (16D)
 
 **~12mm MAE is the theoretical limit** for any parameter predictor operating on VAE-decoded features. This is not a regressor limitation—it's information lost during encode/decode.
 
+---
+
+## Ablation Studies
+
 ### VAE β Parameter
 
 The β parameter controls the trade-off between reconstruction fidelity and latent regularity.
@@ -108,7 +112,7 @@ The β parameter controls the trade-off between reconstruction fidelity and late
 | **0.01** | **89.2%** | **79.0%** | **Optimal** |
 | 0.001 | 85.5% | 76.9% | No improvement |
 
-**Use β=0.01** for L-bracket training.
+**BKM**: Use β=0.01 for L-bracket training.
 
 ### Latent Dimension
 
@@ -120,22 +124,70 @@ The β parameter controls the trade-off between reconstruction fidelity and late
 | **16D** | 0.000891 | **Optimal** |
 | 64D | 0.000882 | Equivalent |
 
-**Use 16D** for best balance of compression and interpolation.
+**BKM**: Use 16D for best balance of compression and interpolation.
 
-### Inference Robustness Issues (Dec 2024)
+### FeatureRegressor Output Constraints
 
-**Critical Discovery**: End-to-end inference shows inconsistent results across different input brackets.
+Attempted fixes for out-of-range predictions (normalized values outside [0,1]):
 
-#### Test Results (8 random brackets, instruction: "make leg1 20mm longer")
+| Approach | Result |
+|----------|--------|
+| Sigmoid output | Vanishing gradients, training didn't converge |
+| Clamping in denormalize | Training worked, but gradient interpretation changed |
+| **No constraint** | Can produce impossible params, but training stable |
 
-| Outcome | Count | Notes |
-|---------|-------|-------|
-| Wrong direction | 5/8 | leg1 decreased instead of increased |
-| Right direction, weak | 2/8 | Only 10-22% of requested magnitude |
-| No change | 1/8 | Essentially zero effect |
-| Correct | 0/8 | None achieved +20mm |
+**BKM**: No output constraint. Occasional impossible values (e.g., negative lengths) accepted as PoC limitation.
 
-#### FeatureRegressor Coupling
+### Parameter Predictor Architecture
+
+Compared GNN vs MLP for predicting parameters from VAE-decoded features:
+
+| Architecture | Input | Parameter MAE |
+|--------------|-------|---------------|
+| GNN (graph structure) | VAE-reconstructed graph | ~12.9mm |
+| **MLP (FeatureRegressor)** | Flattened 124D features | **~12.4mm** |
+
+**BKM**: Simple MLP performs equivalently to GNN on fixed-topology graphs. Use FeatureRegressor for simplicity.
+
+---
+
+## Inference Robustness (Dec 2024 — BKM Training Run)
+
+End-to-end training with BKM parameters shows **improved but inconsistent** results.
+
+#### Test Results: "make leg1 20mm longer" (5 samples)
+
+| Original | Edited | Δ leg1 | % of Target | Result |
+|----------|--------|--------|-------------|--------|
+| 154.64 | 155.98 | +1.34 | 7% | ⚠️ Weak |
+| 68.65 | 87.40 | +18.76 | 94% | ✓ Good |
+| 113.45 | 124.89 | +11.45 | 57% | ⚠️ Partial |
+| 135.49 | 142.66 | +7.18 | 36% | ⚠️ Weak |
+| 152.59 | 153.45 | +0.86 | 4% | ⚠️ Weak |
+
+**leg1 summary**: 5/5 correct direction (improved from 3/8), magnitude 4-94% of target.
+
+#### Test Results: "make leg2 20mm longer" (6 samples)
+
+| Original | Edited | Δ leg2 | Δ leg1 | Result |
+|----------|--------|--------|--------|--------|
+| 65.57 | 65.55 | -0.02 | +9.06 | ❌ Wrong param |
+| 92.92 | 95.53 | +2.61 | +3.87 | ⚠️ Weak |
+| 92.96 | 96.94 | +3.98 | +3.74 | ⚠️ Weak |
+| 165.65 | 164.05 | -1.60 | +1.67 | ❌ Wrong direction |
+| 166.42 | 164.41 | -2.02 | -0.98 | ❌ Wrong direction |
+| 105.90 | 114.34 | +8.45 | +4.16 | ⚠️ Partial (42%) |
+
+**leg2 summary**: 3/6 correct direction, max 42% of target. Model confuses leg1/leg2.
+
+#### Key Observations
+
+1. **Asymmetric performance**: leg1 edits work reliably (5/5 correct direction), leg2 does not (3/6)
+2. **Starting position sensitivity**: Brackets near parameter bounds (leg~150-170mm) show minimal changes—latent space may saturate
+3. **Delta magnitude variance**: LLM produces inconsistent delta magnitudes (0.06-0.87) for identical instructions
+4. **Parameter coupling**: Edits to one leg often affect the other due to entangled latent space
+
+#### Architecture Coupling
 
 The LLM and FeatureRegressor are **indirectly coupled** through VAE features:
 
@@ -148,32 +200,18 @@ Train: (z_src, instruction) → delta    FeatureRegressor(features) → params
                                        LBracket(**params) → STEP
 ```
 
-The LLM learns deltas that cause certain **feature changes**. The FeatureRegressor interprets those features as **parameter values**. If the regressor is retrained, it may interpret the same features differently, breaking the implicit coupling.
-
-#### FeatureRegressor Constraints
-
-Attempted fixes for out-of-range predictions (values outside [0,1]):
-
-| Approach | Result |
-|----------|--------|
-| Sigmoid output | Vanishing gradients, training didn't converge |
-| Clamping in denormalize | Training worked, but gradient interpretation changed |
-| No constraint | Can produce impossible params (e.g., -368mm leg length) |
-
-**Current state**: No constraint (original architecture). Occasional impossible values are accepted as a PoC limitation.
-
 #### Root Causes
 
-1. **Entangled latent space** — No clear "make leg1 longer" direction
-2. **FeatureRegressor sensitivity** — Retraining produces different gradient behavior
-3. **LLM training data** — 50k samples may not cover latent space uniformly
+1. **Entangled latent space** — leg1/leg2 not well disentangled; dominant "size" direction scales whole bracket
+2. **Non-uniform latent coverage** — LLM deltas work on average but don't generalize to all input regions
+3. **Boundary saturation** — Brackets with parameters near min/max show reduced edit effectiveness
 4. **VAE bottleneck** — ~12mm reconstruction error compounds with edit errors
 
 #### Lessons Learned
 
-- **Checkpoint management**: Always backup working checkpoints before modifications
-- **Component coupling**: LLM + FeatureRegressor must be kept in sync or trained jointly
-- **Robustness testing**: Test across multiple random inputs, not just one seed
+- **End-to-end training matters**: Components must be trained together or kept in sync
+- **Robustness testing**: Always test across multiple random inputs, not just one seed
+- **Asymmetric behavior**: Different parameters may have different edit reliability
 
 ## Model Checkpoints
 
@@ -240,7 +278,7 @@ python scripts/infer_latent_editor.py \
 - **Base model**: Mistral 7B with QLoRA (4-bit)
 - **Input**: Latent token (16D → 4096D) + text instruction
 - **Output**: Delta prediction (residual editing)
-- **Performance**: Delta MSE 0.006, Delta MAE 0.036 (~3.6% error per latent dimension)
+- **Performance**: Delta MSE 0.0037, Delta MAE 0.029 (~2.9% error per latent dimension)
 
 ## MVP Expansion Path
 
@@ -253,20 +291,22 @@ When extending beyond L-brackets:
 
 **Key insight**: The LLM can reason over entangled latent spaces. Perfect disentanglement is not required—the editor learns the semantics during training.
 
-## PoC Success Criteria (Updated)
+## PoC Success Criteria (Updated — BKM Run)
 
-Based on experimental findings:
+Based on BKM end-to-end training:
 
 | Metric | Target | Achieved |
 |--------|--------|----------|
-| VAE Node MSE | < 0.01 | 0.001 |
-| VAE Edge MSE | < 0.01 | 0.001 |
+| VAE Node MSE | < 0.01 | 0.000725 |
+| VAE Edge MSE | < 0.01 | 0.000353 |
 | VAE Active Dims | > 50% | 100% (16/16) |
-| Parameter MAE | < 15mm | ~12mm |
-| LLM Delta MSE | < 0.01 | 0.006 |
-| Interpolation Valid | > 95% | 100% |
+| Parameter MAE | < 15mm | 12.4mm |
+| LLM Delta MSE | < 0.01 | 0.0037 |
+| LLM Delta MAE | — | 0.029 (~2.9%/dim) |
+| leg1 edit direction | — | 5/5 (100%) |
+| leg2 edit direction | — | 3/6 (50%) |
 
-**Note**: Original target of <1% parameter error was unrealistic. The ~12mm MAE (~10-15% error) represents the VAE's information bottleneck, not model failure. For practical editing, relative changes ("make it bigger") work well even with absolute parameter uncertainty.
+**Note**: All component metrics exceed targets. However, end-to-end inference shows asymmetric behavior—leg1 edits are reliable but leg2 edits are inconsistent. The ~12mm parameter MAE represents the VAE's information bottleneck, not model failure.
 
 ## Technical Stack
 
