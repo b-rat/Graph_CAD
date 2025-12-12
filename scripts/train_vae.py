@@ -119,6 +119,14 @@ def main():
         "--edge-weight", type=float, default=1.0, help="Weight for edge reconstruction"
     )
 
+    # Auxiliary parameter loss arguments
+    parser.add_argument(
+        "--aux-weight",
+        type=float,
+        default=0.0,
+        help="Weight for auxiliary parameter loss (0 to disable). Forces latent to encode all params.",
+    )
+
     # Semantic loss arguments
     parser.add_argument(
         "--use-semantic-loss",
@@ -191,6 +199,7 @@ def main():
     print(f"Dataset creation took {time.time() - start_time:.1f}s")
 
     # Create model
+    use_param_head = args.aux_weight > 0
     config = GraphVAEConfig(
         latent_dim=args.latent_dim,
         hidden_dim=args.hidden_dim,
@@ -199,6 +208,7 @@ def main():
         decoder_hidden_dims=tuple(args.decoder_hidden),
         encoder_dropout=args.dropout,
         decoder_dropout=args.dropout,
+        use_param_head=use_param_head,
     )
     model = GraphVAE(config).to(device)
 
@@ -206,6 +216,8 @@ def main():
     print(f"\nModel: {num_params:,} trainable parameters")
     print(f"Config: latent_dim={config.latent_dim}, hidden_dim={config.hidden_dim}")
     print(f"Decoder: {config.decoder_hidden_dims}")
+    if use_param_head:
+        print(f"Auxiliary param head enabled (weight={args.aux_weight})")
 
     # Beta scheduler
     beta_config = BetaScheduleConfig(
@@ -279,6 +291,7 @@ def main():
             regressor=regressor,
             semantic_weight=args.semantic_weight,
             free_bits=args.free_bits,
+            aux_weight=args.aux_weight,
         )
 
         # Validate
@@ -291,6 +304,7 @@ def main():
             regressor=regressor,
             semantic_weight=args.semantic_weight,
             free_bits=args.free_bits,
+            aux_weight=args.aux_weight,
         )
 
         # Update LR scheduler
@@ -302,6 +316,7 @@ def main():
 
         # Log progress
         epoch_time = time.time() - epoch_start
+        aux_str = f" | Aux: {val_metrics.get('aux_param_loss', 0):.4f}" if use_param_head else ""
         sem_str = f" | Sem: {val_metrics.get('semantic_loss', 0):.4f}" if regressor else ""
         print(
             f"Epoch {epoch:3d}/{args.epochs} | "
@@ -309,7 +324,7 @@ def main():
             f"Val: {val_metrics['loss']:.4f} | "
             f"Recon: {val_metrics['recon_loss']:.4f} | "
             f"KL: {val_metrics['kl_loss']:.4f} | "
-            f"Beta: {beta:.3f}{sem_str} | "
+            f"Beta: {beta:.3f}{aux_str}{sem_str} | "
             f"LR: {scheduler.get_last_lr()[0]:.2e} | "
             f"Time: {epoch_time:.1f}s"
         )
@@ -337,7 +352,8 @@ def main():
     test_metrics = evaluate(
         model, test_loader, args.target_beta, device,
         loss_config=loss_config, regressor=regressor,
-        semantic_weight=args.semantic_weight
+        semantic_weight=args.semantic_weight,
+        aux_weight=args.aux_weight,
     )
 
     print(f"\nTest Results:")
@@ -346,6 +362,8 @@ def main():
     print(f"  KL Loss:    {test_metrics['kl_loss']:.4f}")
     print(f"  Node MSE:   {test_metrics['node_mse']:.6f}")
     print(f"  Edge MSE:   {test_metrics['edge_mse']:.6f}")
+    if use_param_head:
+        print(f"  Aux Param:  {test_metrics['aux_param_loss']:.4f}")
     if regressor:
         print(f"  Semantic:   {test_metrics['semantic_loss']:.4f}")
 
@@ -365,7 +383,8 @@ def main():
     best_test_metrics = evaluate(
         best_model, test_loader, args.target_beta, device,
         loss_config=loss_config, regressor=regressor,
-        semantic_weight=args.semantic_weight
+        semantic_weight=args.semantic_weight,
+        aux_weight=args.aux_weight,
     )
     best_latent_metrics = compute_latent_metrics(best_model, test_loader, device)
 

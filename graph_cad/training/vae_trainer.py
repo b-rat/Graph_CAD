@@ -16,6 +16,7 @@ from torch_geometric.data import Batch
 from graph_cad.models.losses import (
     VAELossConfig,
     vae_loss,
+    vae_loss_with_aux,
     vae_loss_with_semantic,
 )
 
@@ -138,6 +139,7 @@ def train_epoch(
     regressor: ParameterRegressor | None = None,
     semantic_weight: float = 0.1,
     free_bits: float = 0.0,
+    aux_weight: float = 0.0,
 ) -> dict[str, float]:
     """
     Train VAE for one epoch.
@@ -152,6 +154,7 @@ def train_epoch(
         regressor: Optional pre-trained regressor for semantic loss.
         semantic_weight: Weight for semantic loss if regressor provided.
         free_bits: Minimum KL per dimension.
+        aux_weight: Weight for auxiliary parameter loss (requires model.param_head).
 
     Returns:
         Dictionary with averaged metrics for the epoch.
@@ -162,7 +165,11 @@ def train_epoch(
     total_recon = 0.0
     total_kl = 0.0
     total_semantic = 0.0
+    total_aux = 0.0
     num_batches = 0
+
+    # Check if auxiliary loss is enabled
+    use_aux = aux_weight > 0 and model.param_head is not None
 
     for batch in loader:
         batch = batch.to(device)
@@ -181,7 +188,26 @@ def train_epoch(
         )
 
         # Compute loss
-        if regressor is not None:
+        if use_aux:
+            # Use auxiliary parameter loss
+            # Ground truth params are in batch.y (normalized 0-1)
+            param_target = batch.y.view(-1, model.config.num_params)
+            loss, loss_dict = vae_loss_with_aux(
+                outputs["node_recon"],
+                node_target,
+                outputs["edge_recon"],
+                edge_target,
+                outputs["mu"],
+                outputs["logvar"],
+                outputs["param_pred"],
+                param_target,
+                beta=beta,
+                aux_weight=aux_weight,
+                config=loss_config,
+                free_bits=free_bits,
+            )
+            total_aux += loss_dict["aux_param_loss"].item()
+        elif regressor is not None:
             # Get single-graph edge_index for semantic loss
             single_edge_index = batch.edge_index[:, :model.config.num_edges]
             loss, loss_dict = vae_loss_with_semantic(
@@ -230,6 +256,8 @@ def train_epoch(
         "beta": beta,
     }
 
+    if use_aux:
+        metrics["aux_param_loss"] = total_aux / num_batches
     if regressor is not None:
         metrics["semantic_loss"] = total_semantic / num_batches
 
@@ -246,6 +274,7 @@ def evaluate(
     regressor: ParameterRegressor | None = None,
     semantic_weight: float = 0.1,
     free_bits: float = 0.0,
+    aux_weight: float = 0.0,
 ) -> dict[str, float]:
     """
     Evaluate VAE on a data loader.
@@ -259,6 +288,7 @@ def evaluate(
         regressor: Optional pre-trained regressor for semantic loss.
         semantic_weight: Weight for semantic loss.
         free_bits: Minimum KL per dimension.
+        aux_weight: Weight for auxiliary parameter loss (requires model.param_head).
 
     Returns:
         Dictionary with evaluation metrics.
@@ -269,9 +299,13 @@ def evaluate(
     total_recon = 0.0
     total_kl = 0.0
     total_semantic = 0.0
+    total_aux = 0.0
     total_node_mse = 0.0
     total_edge_mse = 0.0
     num_batches = 0
+
+    # Check if auxiliary loss is enabled
+    use_aux = aux_weight > 0 and model.param_head is not None
 
     for batch in loader:
         batch = batch.to(device)
@@ -289,7 +323,25 @@ def evaluate(
         )
 
         # Compute loss
-        if regressor is not None:
+        if use_aux:
+            # Use auxiliary parameter loss
+            param_target = batch.y.view(-1, model.config.num_params)
+            loss, loss_dict = vae_loss_with_aux(
+                outputs["node_recon"],
+                node_target,
+                outputs["edge_recon"],
+                edge_target,
+                outputs["mu"],
+                outputs["logvar"],
+                outputs["param_pred"],
+                param_target,
+                beta=beta,
+                aux_weight=aux_weight,
+                config=loss_config,
+                free_bits=free_bits,
+            )
+            total_aux += loss_dict["aux_param_loss"].item()
+        elif regressor is not None:
             single_edge_index = batch.edge_index[:, :model.config.num_edges]
             loss, loss_dict = vae_loss_with_semantic(
                 outputs["node_recon"],
@@ -345,6 +397,8 @@ def evaluate(
         "beta": beta,
     }
 
+    if use_aux:
+        metrics["aux_param_loss"] = total_aux / num_batches
     if regressor is not None:
         metrics["semantic_loss"] = total_semantic / num_batches
 

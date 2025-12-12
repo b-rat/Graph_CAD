@@ -181,6 +181,86 @@ def vae_loss(
     return total_loss, loss_dict
 
 
+def auxiliary_param_loss(
+    param_pred: torch.Tensor,
+    param_target: torch.Tensor,
+) -> torch.Tensor:
+    """
+    Compute auxiliary parameter prediction loss.
+
+    Forces the VAE latent space to encode all L-bracket parameters
+    by supervising a prediction head with ground truth parameters.
+
+    Args:
+        param_pred: Predicted parameters from param_head, shape (batch, 8).
+        param_target: Ground truth normalized parameters, shape (batch, 8).
+
+    Returns:
+        aux_loss: MSE between predicted and target parameters.
+    """
+    return F.mse_loss(param_pred, param_target)
+
+
+def vae_loss_with_aux(
+    node_pred: torch.Tensor,
+    node_target: torch.Tensor,
+    edge_pred: torch.Tensor,
+    edge_target: torch.Tensor,
+    mu: torch.Tensor,
+    logvar: torch.Tensor,
+    param_pred: torch.Tensor,
+    param_target: torch.Tensor,
+    beta: float = 1.0,
+    aux_weight: float = 1.0,
+    config: VAELossConfig | None = None,
+    free_bits: float = 0.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    VAE loss with auxiliary parameter prediction loss.
+
+    Loss = Reconstruction + beta * KL + aux_weight * ParamMSE
+
+    The auxiliary loss forces the latent space to encode all 8 L-bracket
+    parameters, preventing dimensionality collapse where some parameters
+    (like thickness and hole diameters) are not represented.
+
+    Args:
+        node_pred: Predicted node features.
+        node_target: Target node features.
+        edge_pred: Predicted edge features.
+        edge_target: Target edge features.
+        mu: Latent mean.
+        logvar: Latent log variance.
+        param_pred: Predicted parameters from param_head, shape (batch, 8).
+        param_target: Ground truth normalized parameters, shape (batch, 8).
+        beta: Weight for KL divergence.
+        aux_weight: Weight for auxiliary parameter loss.
+        config: Loss configuration.
+        free_bits: Minimum KL per dimension.
+
+    Returns:
+        total_loss: Combined loss.
+        loss_dict: All components for logging.
+    """
+    # Base VAE loss
+    base_loss, loss_dict = vae_loss(
+        node_pred, node_target, edge_pred, edge_target,
+        mu, logvar, beta, config, free_bits
+    )
+
+    # Auxiliary parameter loss
+    aux_loss = auxiliary_param_loss(param_pred, param_target)
+
+    # Combined
+    total_loss = base_loss + aux_weight * aux_loss
+
+    loss_dict["aux_param_loss"] = aux_loss.detach()
+    loss_dict["aux_weight"] = torch.tensor(aux_weight)
+    loss_dict["total_loss"] = total_loss.detach()
+
+    return total_loss, loss_dict
+
+
 def semantic_loss(
     node_pred: torch.Tensor,
     node_target: torch.Tensor,

@@ -37,6 +37,10 @@ class GraphVAEConfig:
     decoder_hidden_dims: tuple[int, ...] = (256, 256, 128)
     decoder_dropout: float = 0.1
 
+    # Auxiliary parameter prediction (forces latent to encode all params)
+    num_params: int = 8  # L-bracket has 8 parameters
+    use_param_head: bool = False  # Enable auxiliary parameter prediction
+
 
 class GraphVAEEncoder(nn.Module):
     """
@@ -221,6 +225,17 @@ class GraphVAE(nn.Module):
         self.encoder = GraphVAEEncoder(self.config)
         self.decoder = GraphVAEDecoder(self.config)
 
+        # Auxiliary parameter prediction head (z -> 8 L-bracket parameters)
+        # Forces latent space to encode all parameters, not just dominant ones
+        if self.config.use_param_head:
+            self.param_head = nn.Sequential(
+                nn.Linear(self.config.latent_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, self.config.num_params),
+            )
+        else:
+            self.param_head = None
+
     def reparameterize(
         self, mu: torch.Tensor, logvar: torch.Tensor
     ) -> torch.Tensor:
@@ -286,13 +301,19 @@ class GraphVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         node_recon, edge_recon = self.decode(z)
 
-        return {
+        result = {
             "node_recon": node_recon,
             "edge_recon": edge_recon,
             "mu": mu,
             "logvar": logvar,
             "z": z,
         }
+
+        # Auxiliary parameter prediction (if enabled)
+        if self.param_head is not None:
+            result["param_pred"] = self.param_head(z)
+
+        return result
 
     def sample(
         self, num_samples: int, device: str = "cpu"
