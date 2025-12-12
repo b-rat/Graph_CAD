@@ -444,39 +444,52 @@ def _sample_bracket_in_region(rng: np.random.Generator, region: str) -> "LBracke
         t = rng.uniform(bias_low, bias_high)
         return low + t * (high - low)
 
-    leg1 = sample_param(ranges.leg1_length)
-    leg2 = sample_param(ranges.leg2_length)
-    width = sample_param(ranges.width)
-    thickness = sample_param(ranges.thickness)
-    hole1_d = sample_param(ranges.hole1_diameter)
-    hole2_d = sample_param(ranges.hole2_diameter)
+    # Try up to 10 times to generate a valid bracket
+    for attempt in range(10):
+        leg1 = sample_param(ranges.leg1_length)
+        leg2 = sample_param(ranges.leg2_length)
+        width = sample_param(ranges.width)
+        thickness = sample_param(ranges.thickness)
+        hole1_d = sample_param(ranges.hole1_diameter)
+        hole2_d = sample_param(ranges.hole2_diameter)
 
-    # Compute valid hole distances
-    # Hole must be at least radius from leg end and from inner corner
-    min_hole1_dist = hole1_d / 2 + 2  # 2mm margin from end
-    max_hole1_dist = leg1 - thickness - hole1_d / 2 - 2  # 2mm margin from corner
-    hole1_dist = rng.uniform(
-        max(min_hole1_dist, 10),
-        max(max_hole1_dist, min_hole1_dist + 10)
-    )
+        # Compute valid hole distance ranges using exact LBracket constraints:
+        # hole_distance <= leg_length - thickness - hole_diameter/2
+        # hole_distance >= hole_diameter/2 (hole must not extend past leg end)
 
-    min_hole2_dist = hole2_d / 2 + 2
-    max_hole2_dist = leg2 - thickness - hole2_d / 2 - 2
-    hole2_dist = rng.uniform(
-        max(min_hole2_dist, 10),
-        max(max_hole2_dist, min_hole2_dist + 10)
-    )
+        # Hole 1 (in leg1)
+        min_hole1_dist = hole1_d / 2 + 1  # Small margin from leg end
+        max_hole1_dist = leg1 - thickness - hole1_d / 2 - 1  # Margin from inner corner
 
-    return LBracket(
-        leg1_length=leg1,
-        leg2_length=leg2,
-        width=width,
-        thickness=thickness,
-        hole1_distance=hole1_dist,
-        hole1_diameter=hole1_d,
-        hole2_distance=hole2_dist,
-        hole2_diameter=hole2_d,
-    )
+        # Hole 2 (in leg2)
+        min_hole2_dist = hole2_d / 2 + 1
+        max_hole2_dist = leg2 - thickness - hole2_d / 2 - 1
+
+        # Check if valid ranges exist
+        if max_hole1_dist <= min_hole1_dist or max_hole2_dist <= min_hole2_dist:
+            # Geometry too tight, retry with new random params
+            continue
+
+        hole1_dist = rng.uniform(min_hole1_dist, max_hole1_dist)
+        hole2_dist = rng.uniform(min_hole2_dist, max_hole2_dist)
+
+        try:
+            return LBracket(
+                leg1_length=leg1,
+                leg2_length=leg2,
+                width=width,
+                thickness=thickness,
+                hole1_distance=hole1_dist,
+                hole1_diameter=hole1_d,
+                hole2_distance=hole2_dist,
+                hole2_diameter=hole2_d,
+            )
+        except ValueError:
+            # Validation failed, retry
+            continue
+
+    # Fallback to LBracket.random() if region sampling keeps failing
+    return LBracket.random(rng)
 
 
 # =============================================================================
