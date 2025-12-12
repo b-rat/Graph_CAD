@@ -301,7 +301,7 @@ def main():
     parser.add_argument(
         "--editor-checkpoint",
         type=str,
-        default="outputs/latent_editor_vae16d_lowbeta/best_model.pt",
+        default="outputs/latent_editor/best_model.pt",
         help="Path to trained Latent Editor checkpoint",
     )
     parser.add_argument(

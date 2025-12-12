@@ -80,3 +80,29 @@ python scripts/infer_latent_editor.py \
     --seed $RANDOM \
     --verbose
 ```
+
+```bash
+#training sequence end-to-end
+rm -rf data/feature_regressor_cache && \
+python scripts/train_vae.py \
+    --epochs 100 \
+    --latent-dim 16 \
+    --target-beta 0.01 \
+    --free-bits 2.0 \
+    --output-dir outputs/vae_16d_lowbeta && \
+python scripts/train_feature_regressor.py \
+    --vae-checkpoint outputs/vae_16d_lowbeta/best_model.pt \
+    --train-size 10000 \
+    --epochs 100 \
+    --output-dir outputs/feature_regressor && \
+python scripts/generate_edit_data.py \
+    --vae-checkpoint outputs/vae_16d_lowbeta/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data && \
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data \
+    --epochs 10 \
+    --batch-size 8 \
+    --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor
+```
