@@ -64,7 +64,7 @@ def analyze_data(data_path: Path):
 
     for sample in data:
         instruction = sample["instruction"]
-        delta = np.array(sample["delta"])
+        delta = np.array(sample["delta_z"])
 
         parsed = parse_instruction(instruction)
         key = (parsed["param"], parsed["direction"])
