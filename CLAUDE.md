@@ -213,36 +213,178 @@ Train: (z_src, instruction) → delta    FeatureRegressor(features) → params
 - **Robustness testing**: Always test across multiple random inputs, not just one seed
 - **Asymmetric behavior**: Different parameters may have different edit reliability
 
+---
+
+## Auxiliary Parameter Loss VAE (Dec 2024)
+
+### Problem: Latent Space Collapse
+
+Analysis of the original VAE revealed severe latent space collapse:
+- **Effective dimensions**: Only ~3 of 16 dimensions were active
+- **Missing parameters**: Thickness and hole diameters had near-zero correlation with latent space
+- **Entanglement**: leg1/leg2 were highly anti-correlated (-0.80), making them hard to edit independently
+
+### Solution: Auxiliary Parameter Prediction
+
+Added a supervised parameter prediction head during VAE training:
+```
+z → MLP → 8 predicted parameters
+aux_loss = MSE(predicted_params, true_params)
+total_loss = reconstruction_loss + β*KL_loss + λ*aux_loss
+```
+
+### Results: aux-VAE vs Original VAE
+
+| Metric | Original VAE | aux-VAE | Improvement |
+|--------|--------------|---------|-------------|
+| Effective dimensions | ~3 | ~8 | ✓ Full utilization |
+| Thickness correlation | 0.033 | 0.787 | +2300% |
+| Hole1 correlation | 0.048 | 0.673 | +1300% |
+| Hole2 correlation | 0.053 | 0.797 | +1400% |
+| leg1/leg2 entanglement | -0.80 | -0.46 | Better separation |
+| Node MSE | 0.0116 | 0.00073 | 93.7% lower |
+
+**Checkpoint**: `outputs/vae_aux/best_model.pt`
+
+---
+
+## Latent Editor Retraining (Dec 2024)
+
+### Training Runs with aux-VAE
+
+Retrained the latent editor with the improved aux-VAE latent space:
+
+| Run | Epochs | LR | Final Val MSE | Final Val MAE |
+|-----|--------|-----|---------------|---------------|
+| Baseline | 10 | 2e-4 | 0.00585 | 0.0446 |
+| Extended | 20 | 2e-4 | 0.00558 | 0.0434 |
+| Lower LR | 20 | 1e-4 | 0.00552 | 0.0433 |
+
+Note: Higher MSE/MAE than original model (0.0037/0.029) because aux-VAE latent space has 8 effective dimensions vs 3, making delta prediction harder.
+
+### End-to-End Evaluation (2000 trials)
+
+| Parameter | Correct Direction | Increase Correct | Decrease Correct |
+|-----------|-------------------|------------------|------------------|
+| leg1 | 52.0% | 27.5% | 76.5% |
+| leg2 | 52.0% | 8.5% | 95.5% |
+| width | 60.0% | 74.0% | 46.0% |
+| thickness | 52.0% | 100% | 4.0% |
+| hole1 | 49.0% | 8.7% | 89.3% |
+| hole2 | 51.3% | 28.0% | 74.7% |
+
+### Critical Finding: Directional Bias
+
+The model learned a **shortcut** instead of understanding instructions:
+- For leg1/leg2/holes: Always predicts "decrease" direction
+- For thickness/width: Always predicts "increase" direction
+- Achieves ~52% accuracy by ignoring instruction direction entirely
+
+### Diagnosis: Data is Clean, Model Takes Shortcut
+
+Analyzed training data for bias:
+```
+Cosine(increase_delta, decrease_delta) per parameter:
+  leg1: -0.997 ✓ (nearly opposite, as expected)
+  leg2: -0.996 ✓
+  thickness: -0.997 ✓
+  holes: -0.999 to -1.000 ✓
+```
+
+**Conclusion**: Training data has clean, symmetric increase/decrease deltas. The MSE loss allows the model to minimize error by predicting a fixed direction per parameter rather than parsing the instruction.
+
+---
+
+## Contrastive Learning (In Progress)
+
+### Approach: Paired Batch Contrastive Loss
+
+Force the model to distinguish increase vs decrease by training on paired samples:
+
+```python
+# For same source bracket:
+delta_inc = model(z_src, "make leg1 longer")
+delta_dec = model(z_src, "make leg1 shorter")
+
+# Contrastive loss: should be opposite directions
+contrastive_loss = cosine_similarity(delta_inc, delta_dec) + 1  # minimize when cos = -1
+
+# Total loss
+loss = mse_loss + λ * contrastive_loss
+```
+
+### Implementation
+
+1. **Data generation**: `--paired` flag generates matched increase/decrease samples
+2. **Dataset**: `PairedLatentEditDataset` holds paired samples
+3. **Training**: `train_epoch_paired` does two forward passes per sample
+4. **Loss**: Combines MSE for accuracy + contrastive for direction
+
+### Training Commands
+
+```bash
+# Generate paired data
+python scripts/generate_edit_data.py \
+    --paired \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data_paired
+
+# Train with contrastive loss
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_paired \
+    --contrastive-weight 0.5 \
+    --epochs 20 \
+    --output-dir outputs/latent_editor_contrastive
+```
+
+### Expected Outcome
+
+- `mean_cos_sim` should decrease toward -1.0 (opposite directions)
+- Increase/decrease accuracy should become symmetric (~75%+ both)
+- May trade some MSE accuracy for directional control
+
+---
+
 ## Model Checkpoints
 
-**Production checkpoints:**
-- `outputs/vae_16d_lowbeta/best_model.pt` — VAE (16D, β=0.01)
-- `outputs/latent_editor_vae16d_lowbeta/best_model.pt` — LLM Latent Editor
+**Current best checkpoints:**
+- `outputs/vae_aux/best_model.pt` — VAE with auxiliary parameter loss (16D, β=0.01)
+- `outputs/latent_editor_aux_ep20_lr1e4/best_model.pt` — LLM Latent Editor (aux-VAE, pre-contrastive)
 - `outputs/feature_regressor/best_model.pt` — FeatureRegressor
+
+**Legacy checkpoints:**
+- `outputs/vae_16d_lowbeta/best_model.pt` — Original VAE (collapsed latent space)
+- `outputs/latent_editor_vae16d_lowbeta/best_model.pt` — Original LLM Latent Editor
 
 ## Training Commands
 
 ```bash
-# VAE (local or cloud)
+# VAE with auxiliary parameter loss (recommended)
 python scripts/train_vae.py \
     --epochs 100 --latent-dim 16 --target-beta 0.01 --free-bits 2.0 \
-    --output-dir outputs/vae_16d_lowbeta
+    --aux-param-weight 0.1 \
+    --output-dir outputs/vae_aux
 
 # FeatureRegressor (cloud GPU recommended)
 python scripts/train_feature_regressor.py \
-    --vae-checkpoint outputs/vae_16d_lowbeta/best_model.pt \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
     --cache-dir data/feature_regressor_cache \
     --train-size 10000 --epochs 100
 
-# Latent Editor data generation (local)
+# Latent Editor data generation - PAIRED for contrastive learning
 python scripts/generate_edit_data.py \
-    --vae-checkpoint outputs/vae_16d_lowbeta/best_model.pt \
-    --num-samples 50000 --output data/edit_data
+    --paired \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --num-samples 50000 --output data/edit_data_paired
 
-# Latent Editor training (cloud GPU, A40 recommended)
+# Latent Editor training WITH contrastive loss (cloud GPU, A40 recommended)
 python scripts/train_latent_editor.py \
-    --data-dir data/edit_data --epochs 10 \
-    --batch-size 8 --gradient-accumulation 4
+    --data-dir data/edit_data_paired \
+    --contrastive-weight 0.5 \
+    --epochs 20 \
+    --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_contrastive
 ```
 
 ## Inference
@@ -291,22 +433,34 @@ When extending beyond L-brackets:
 
 **Key insight**: The LLM can reason over entangled latent spaces. Perfect disentanglement is not required—the editor learns the semantics during training.
 
-## PoC Success Criteria (Updated — BKM Run)
+## PoC Success Criteria (Updated — Dec 2024)
 
-Based on BKM end-to-end training:
+### Component Metrics (aux-VAE)
 
-| Metric | Target | Achieved |
-|--------|--------|----------|
-| VAE Node MSE | < 0.01 | 0.000725 |
-| VAE Edge MSE | < 0.01 | 0.000353 |
-| VAE Active Dims | > 50% | 100% (16/16) |
-| Parameter MAE | < 15mm | 12.4mm |
-| LLM Delta MSE | < 0.01 | 0.0037 |
-| LLM Delta MAE | — | 0.029 (~2.9%/dim) |
-| leg1 edit direction | — | 5/5 (100%) |
-| leg2 edit direction | — | 3/6 (50%) |
+| Metric | Target | Achieved | Status |
+|--------|--------|----------|--------|
+| VAE Node MSE | < 0.01 | 0.00073 | ✓ |
+| VAE Effective Dims | > 50% | 100% (8/8 params encoded) | ✓ |
+| LLM Delta MSE | < 0.01 | 0.0055 | ✓ |
+| LLM Delta MAE | — | 0.043 | — |
 
-**Note**: All component metrics exceed targets. However, end-to-end inference shows asymmetric behavior—leg1 edits are reliable but leg2 edits are inconsistent. The ~12mm parameter MAE represents the VAE's information bottleneck, not model failure.
+### End-to-End Metrics (Pre-Contrastive)
+
+| Metric | Target | Current | Status |
+|--------|--------|---------|--------|
+| Overall direction accuracy | > 70% | 52% | ❌ Blocked by shortcut |
+| Increase accuracy | > 70% | 8-100% (param dependent) | ❌ Asymmetric |
+| Decrease accuracy | > 70% | 4-95% (param dependent) | ❌ Asymmetric |
+
+### Targets for Contrastive Learning
+
+| Metric | Target | Notes |
+|--------|--------|-------|
+| mean_cos_sim | < -0.5 | Opposite deltas for opposite instructions |
+| Inc/Dec symmetry | < 20% gap | Both directions ~equally accurate |
+| Direction accuracy | > 70% | For all parameters |
+
+**Current blocker**: Model takes shortcut (always predict fixed direction per parameter). Contrastive learning should fix this by explicitly penalizing same-direction predictions for opposite instructions.
 
 ## Technical Stack
 
