@@ -27,7 +27,12 @@ from tqdm import tqdm
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from graph_cad.data.edit_dataset import LatentEditDataset, collate_edit_batch
+from graph_cad.data.edit_dataset import (
+    LatentEditDataset,
+    PairedLatentEditDataset,
+    collate_edit_batch,
+    collate_paired_edit_batch,
+)
 from graph_cad.models.latent_editor import (
     LatentEditor,
     LatentEditorConfig,
@@ -36,8 +41,10 @@ from graph_cad.models.latent_editor import (
 from graph_cad.training.edit_trainer import (
     EditLossConfig,
     evaluate,
+    evaluate_paired,
     save_editor_checkpoint,
     train_epoch,
+    train_epoch_paired,
 )
 
 
@@ -152,6 +159,12 @@ def main():
         help="Weight for graph reconstruction loss (requires VAE)",
     )
     parser.add_argument(
+        "--contrastive-weight",
+        type=float,
+        default=0.0,
+        help="Weight for contrastive loss (requires paired data)",
+    )
+    parser.add_argument(
         "--vae-checkpoint",
         type=str,
         default=None,
@@ -221,8 +234,30 @@ def main():
     print(f"\nLoading data from {args.data_dir}...")
     data_dir = Path(args.data_dir)
 
-    train_dataset = LatentEditDataset(data_dir / "train.json")
-    val_dataset = LatentEditDataset(data_dir / "val.json")
+    # Check if data is paired (for contrastive learning)
+    metadata_path = data_dir / "metadata.json"
+    is_paired = False
+    if metadata_path.exists():
+        import json
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+            is_paired = metadata.get("paired", False)
+
+    if args.contrastive_weight > 0 and not is_paired:
+        print("Warning: --contrastive-weight > 0 but data is not paired.")
+        print("         Generate paired data with: python scripts/generate_edit_data.py --paired")
+        print("         Continuing with standard training...")
+        is_paired = False
+
+    if is_paired:
+        print("  Using paired dataset for contrastive learning")
+        train_dataset = PairedLatentEditDataset(data_dir / "train.json")
+        val_dataset = PairedLatentEditDataset(data_dir / "val.json")
+        collate_fn = collate_paired_edit_batch
+    else:
+        train_dataset = LatentEditDataset(data_dir / "train.json")
+        val_dataset = LatentEditDataset(data_dir / "val.json")
+        collate_fn = collate_edit_batch
 
     print(f"  Train samples: {len(train_dataset)}")
     print(f"  Val samples: {len(val_dataset)}")
@@ -233,7 +268,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.num_workers,
-        collate_fn=collate_edit_batch,
+        collate_fn=collate_fn,
         pin_memory=True if device == "cuda" else False,
     )
     val_loader = DataLoader(
@@ -241,7 +276,7 @@ def main():
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        collate_fn=collate_edit_batch,
+        collate_fn=collate_fn,
         pin_memory=True if device == "cuda" else False,
     )
 
@@ -277,7 +312,11 @@ def main():
     loss_config = EditLossConfig(
         delta_weight=args.delta_weight,
         graph_weight=args.graph_weight,
+        contrastive_weight=args.contrastive_weight,
     )
+
+    if args.contrastive_weight > 0:
+        print(f"  Contrastive weight: {args.contrastive_weight}")
 
     # Load VAE if using graph reconstruction loss
     vae = None
@@ -337,33 +376,61 @@ def main():
         print(f"{'='*60}")
 
         # Train
-        train_metrics = train_epoch(
-            editor=editor,
-            loader=train_loader,
-            optimizer=optimizer,
-            device=device,
-            config=loss_config,
-            vae=vae,
-            gradient_accumulation_steps=args.gradient_accumulation,
-            max_grad_norm=args.max_grad_norm,
-        )
+        if is_paired:
+            train_metrics = train_epoch_paired(
+                editor=editor,
+                loader=train_loader,
+                optimizer=optimizer,
+                device=device,
+                config=loss_config,
+                gradient_accumulation_steps=args.gradient_accumulation,
+                max_grad_norm=args.max_grad_norm,
+            )
+        else:
+            train_metrics = train_epoch(
+                editor=editor,
+                loader=train_loader,
+                optimizer=optimizer,
+                device=device,
+                config=loss_config,
+                vae=vae,
+                gradient_accumulation_steps=args.gradient_accumulation,
+                max_grad_norm=args.max_grad_norm,
+            )
         scheduler.step()
 
-        print(f"\nTrain - Loss: {train_metrics['loss']:.6f}, "
-              f"Delta MSE: {train_metrics['delta_mse']:.6f}")
+        if is_paired:
+            print(f"\nTrain - Loss: {train_metrics['loss']:.6f}, "
+                  f"Delta MSE: {train_metrics['delta_mse']:.6f}, "
+                  f"Contrastive: {train_metrics['contrastive_loss']:.6f}, "
+                  f"CosSim: {train_metrics['mean_cos_sim']:.3f}")
+        else:
+            print(f"\nTrain - Loss: {train_metrics['loss']:.6f}, "
+                  f"Delta MSE: {train_metrics['delta_mse']:.6f}")
 
         # Validate
-        val_metrics = evaluate(
-            editor=editor,
-            loader=val_loader,
-            device=device,
-            config=loss_config,
-            vae=vae,
-        )
-
-        print(f"Val   - Loss: {val_metrics['loss']:.6f}, "
-              f"Delta MSE: {val_metrics['delta_mse']:.6f}, "
-              f"Delta MAE: {val_metrics['delta_mae']:.6f}")
+        if is_paired:
+            val_metrics = evaluate_paired(
+                editor=editor,
+                loader=val_loader,
+                device=device,
+                config=loss_config,
+            )
+            print(f"Val   - Loss: {val_metrics['loss']:.6f}, "
+                  f"Delta MSE: {val_metrics['delta_mse']:.6f}, "
+                  f"Delta MAE: {val_metrics['delta_mae']:.6f}, "
+                  f"CosSim: {val_metrics['mean_cos_sim']:.3f}")
+        else:
+            val_metrics = evaluate(
+                editor=editor,
+                loader=val_loader,
+                device=device,
+                config=loss_config,
+                vae=vae,
+            )
+            print(f"Val   - Loss: {val_metrics['loss']:.6f}, "
+                  f"Delta MSE: {val_metrics['delta_mse']:.6f}, "
+                  f"Delta MAE: {val_metrics['delta_mae']:.6f}")
 
         # Track results
         results["train"].append({"epoch": epoch, **train_metrics})

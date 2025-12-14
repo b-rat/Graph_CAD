@@ -26,6 +26,7 @@ class EditLossConfig:
     delta_weight: float = 1.0  # Primary: MSE on latent delta
     graph_weight: float = 0.0  # Secondary: MSE on decoded graphs
     l1_weight: float = 0.0  # Optional: L1 regularization on delta
+    contrastive_weight: float = 0.0  # Contrastive loss for paired samples
 
     # Normalization
     normalize_delta: bool = False  # Normalize delta by magnitude
@@ -147,6 +148,272 @@ def edit_loss(
         loss_dict["total_loss"] = total_loss
 
     return total_loss, loss_dict
+
+
+def contrastive_loss(
+    delta_inc: torch.Tensor,
+    delta_dec: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Compute contrastive loss between increase and decrease predictions.
+
+    Encourages opposite deltas for opposite instructions by penalizing
+    cosine similarity (should be -1 for opposite directions).
+
+    Args:
+        delta_inc: Predicted delta for increase instruction, shape (batch, latent_dim)
+        delta_dec: Predicted delta for decrease instruction, shape (batch, latent_dim)
+
+    Returns:
+        (loss, loss_dict) where loss is minimized when deltas are opposite
+    """
+    # Normalize to unit vectors
+    delta_inc_norm = F.normalize(delta_inc, dim=1)
+    delta_dec_norm = F.normalize(delta_dec, dim=1)
+
+    # Cosine similarity: should be -1 (opposite directions)
+    # Loss = (cos_sim + 1) which is 0 when cos_sim = -1
+    cos_sim = (delta_inc_norm * delta_dec_norm).sum(dim=1)
+    loss = (cos_sim + 1).mean()
+
+    return loss, {
+        "contrastive_loss": loss,
+        "mean_cos_sim": cos_sim.mean(),
+    }
+
+
+def paired_edit_loss(
+    delta_inc_pred: torch.Tensor,
+    delta_dec_pred: torch.Tensor,
+    delta_inc_target: torch.Tensor,
+    delta_dec_target: torch.Tensor,
+    config: EditLossConfig | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Combined loss for paired (contrastive) training.
+
+    Computes MSE loss for both directions plus contrastive loss.
+
+    Args:
+        delta_inc_pred: Predicted delta for increase
+        delta_dec_pred: Predicted delta for decrease
+        delta_inc_target: Target delta for increase
+        delta_dec_target: Target delta for decrease
+        config: Loss configuration
+
+    Returns:
+        (total_loss, loss_dict)
+    """
+    if config is None:
+        config = EditLossConfig()
+
+    loss_dict = {}
+
+    # MSE loss for increase direction
+    mse_inc = F.mse_loss(delta_inc_pred, delta_inc_target)
+    loss_dict["mse_inc"] = mse_inc
+
+    # MSE loss for decrease direction
+    mse_dec = F.mse_loss(delta_dec_pred, delta_dec_target)
+    loss_dict["mse_dec"] = mse_dec
+
+    # Average MSE
+    mse_total = (mse_inc + mse_dec) / 2
+    loss_dict["delta_mse"] = mse_total
+
+    # Contrastive loss
+    if config.contrastive_weight > 0:
+        contr_loss, contr_dict = contrastive_loss(delta_inc_pred, delta_dec_pred)
+        loss_dict.update(contr_dict)
+    else:
+        contr_loss = torch.tensor(0.0, device=delta_inc_pred.device)
+        loss_dict["contrastive_loss"] = contr_loss
+        loss_dict["mean_cos_sim"] = torch.tensor(0.0, device=delta_inc_pred.device)
+
+    # Total loss
+    total_loss = config.delta_weight * mse_total + config.contrastive_weight * contr_loss
+    loss_dict["total_loss"] = total_loss
+
+    return total_loss, loss_dict
+
+
+def train_epoch_paired(
+    editor: LatentEditor,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: str,
+    config: EditLossConfig | None = None,
+    gradient_accumulation_steps: int = 1,
+    max_grad_norm: float = 1.0,
+) -> dict[str, float]:
+    """
+    Train editor for one epoch with paired (contrastive) data.
+
+    Each batch contains paired increase/decrease samples that share
+    the same source bracket.
+
+    Args:
+        editor: LatentEditor model
+        loader: DataLoader for paired edit samples
+        optimizer: Optimizer
+        device: Device to train on
+        config: Loss configuration (should have contrastive_weight > 0)
+        gradient_accumulation_steps: Number of steps to accumulate gradients
+        max_grad_norm: Maximum gradient norm for clipping
+
+    Returns:
+        Dictionary with averaged metrics for the epoch
+    """
+    editor.train()
+
+    total_loss = 0.0
+    total_delta_mse = 0.0
+    total_contrastive = 0.0
+    total_cos_sim = 0.0
+    num_batches = 0
+
+    optimizer.zero_grad()
+
+    for batch_idx, batch in enumerate(loader):
+        z_src = batch["z_src"].to(device)
+        delta_z_inc = batch["delta_z_inc"].to(device)
+        delta_z_dec = batch["delta_z_dec"].to(device)
+        instructions_inc = batch["instructions_inc"]
+        instructions_dec = batch["instructions_dec"]
+
+        # Forward pass for increase direction
+        outputs_inc = editor(z_src, instructions_inc)
+        delta_pred_inc = outputs_inc["delta_z"]
+
+        # Forward pass for decrease direction
+        outputs_dec = editor(z_src, instructions_dec)
+        delta_pred_dec = outputs_dec["delta_z"]
+
+        # Compute combined loss
+        loss, loss_dict = paired_edit_loss(
+            delta_inc_pred=delta_pred_inc,
+            delta_dec_pred=delta_pred_dec,
+            delta_inc_target=delta_z_inc,
+            delta_dec_target=delta_z_dec,
+            config=config,
+        )
+
+        # Scale loss for gradient accumulation
+        loss = loss / gradient_accumulation_steps
+        loss.backward()
+
+        # Accumulate metrics (unscaled)
+        total_loss += loss_dict["total_loss"].item()
+        total_delta_mse += loss_dict["delta_mse"].item()
+        total_contrastive += loss_dict["contrastive_loss"].item()
+        total_cos_sim += loss_dict["mean_cos_sim"].item()
+        num_batches += 1
+
+        # Update weights
+        if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            torch.nn.utils.clip_grad_norm_(
+                editor.get_trainable_parameters(), max_grad_norm
+            )
+            optimizer.step()
+            optimizer.zero_grad()
+
+    # Handle remaining gradients
+    if num_batches % gradient_accumulation_steps != 0:
+        torch.nn.utils.clip_grad_norm_(
+            editor.get_trainable_parameters(), max_grad_norm
+        )
+        optimizer.step()
+        optimizer.zero_grad()
+
+    # Average metrics
+    metrics = {
+        "loss": total_loss / num_batches,
+        "delta_mse": total_delta_mse / num_batches,
+        "contrastive_loss": total_contrastive / num_batches,
+        "mean_cos_sim": total_cos_sim / num_batches,
+        "delta_l1": 0.0,  # For compatibility
+    }
+
+    return metrics
+
+
+@torch.no_grad()
+def evaluate_paired(
+    editor: LatentEditor,
+    loader: DataLoader,
+    device: str,
+    config: EditLossConfig | None = None,
+) -> dict[str, float]:
+    """
+    Evaluate editor on paired data.
+
+    Args:
+        editor: LatentEditor model
+        loader: DataLoader for paired edit samples
+        device: Device to evaluate on
+        config: Loss configuration
+
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    editor.eval()
+
+    total_loss = 0.0
+    total_delta_mse = 0.0
+    total_contrastive = 0.0
+    total_cos_sim = 0.0
+    total_mae_inc = 0.0
+    total_mae_dec = 0.0
+    num_batches = 0
+
+    for batch in loader:
+        z_src = batch["z_src"].to(device)
+        delta_z_inc = batch["delta_z_inc"].to(device)
+        delta_z_dec = batch["delta_z_dec"].to(device)
+        instructions_inc = batch["instructions_inc"]
+        instructions_dec = batch["instructions_dec"]
+
+        # Forward pass for both directions
+        outputs_inc = editor(z_src, instructions_inc)
+        delta_pred_inc = outputs_inc["delta_z"]
+
+        outputs_dec = editor(z_src, instructions_dec)
+        delta_pred_dec = outputs_dec["delta_z"]
+
+        # Compute loss
+        loss, loss_dict = paired_edit_loss(
+            delta_inc_pred=delta_pred_inc,
+            delta_dec_pred=delta_pred_dec,
+            delta_inc_target=delta_z_inc,
+            delta_dec_target=delta_z_dec,
+            config=config,
+        )
+
+        # Accumulate metrics
+        total_loss += loss_dict["total_loss"].item()
+        total_delta_mse += loss_dict["delta_mse"].item()
+        total_contrastive += loss_dict["contrastive_loss"].item()
+        total_cos_sim += loss_dict["mean_cos_sim"].item()
+
+        # MAE for each direction
+        total_mae_inc += (delta_pred_inc - delta_z_inc).abs().mean().item()
+        total_mae_dec += (delta_pred_dec - delta_z_dec).abs().mean().item()
+        num_batches += 1
+
+    # Average metrics
+    metrics = {
+        "loss": total_loss / num_batches,
+        "delta_mse": total_delta_mse / num_batches,
+        "contrastive_loss": total_contrastive / num_batches,
+        "mean_cos_sim": total_cos_sim / num_batches,
+        "delta_mae": (total_mae_inc + total_mae_dec) / (2 * num_batches),
+        "delta_mae_inc": total_mae_inc / num_batches,
+        "delta_mae_dec": total_mae_dec / num_batches,
+        "delta_l1": 0.0,  # For compatibility
+        "delta_norm_error": 0.0,  # Not computed for paired
+    }
+
+    return metrics
 
 
 def train_epoch(

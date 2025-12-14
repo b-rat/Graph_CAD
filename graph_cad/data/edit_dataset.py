@@ -268,3 +268,111 @@ def collate_edit_batch(batch: list[dict]) -> dict:
         "z_tgt": torch.stack([sample["z_tgt"] for sample in batch]),
         "delta_z": torch.stack([sample["delta_z"] for sample in batch]),
     }
+
+
+class PairedLatentEditDataset(Dataset):
+    """
+    Dataset for contrastive latent editing training.
+
+    Each sample contains paired increase/decrease edits for the same
+    source bracket and parameter. This enables contrastive learning
+    where the model must produce opposite deltas for opposite instructions.
+    """
+
+    def __init__(
+        self,
+        data_path: str | Path | None = None,
+        samples: list[dict] | None = None,
+    ):
+        """
+        Initialize dataset from file or list.
+
+        Args:
+            data_path: Path to JSON file with paired edit samples.
+            samples: List of sample dictionaries (alternative to file).
+        """
+        self.samples = []
+
+        if data_path is not None:
+            self._load_from_file(data_path)
+        elif samples is not None:
+            self.samples = samples
+        else:
+            raise ValueError("Must provide either data_path or samples")
+
+    def _load_from_file(self, path: str | Path) -> None:
+        """Load samples from JSON file."""
+        path = Path(path)
+        with open(path) as f:
+            data = json.load(f)
+
+        for item in data:
+            self.samples.append({
+                "z_src": torch.tensor(item["z_src"], dtype=torch.float32),
+                "param": item["param"],
+                # Increase direction
+                "instruction_inc": item["instruction_inc"],
+                "z_tgt_inc": torch.tensor(item["z_tgt_inc"], dtype=torch.float32),
+                "delta_z_inc": torch.tensor(item["delta_z_inc"], dtype=torch.float32),
+                "delta_inc": item["delta_inc"],
+                # Decrease direction
+                "instruction_dec": item["instruction_dec"],
+                "z_tgt_dec": torch.tensor(item["z_tgt_dec"], dtype=torch.float32),
+                "delta_z_dec": torch.tensor(item["delta_z_dec"], dtype=torch.float32),
+                "delta_dec": item["delta_dec"],
+            })
+
+    def __len__(self) -> int:
+        return len(self.samples)
+
+    def __getitem__(self, idx: int) -> dict:
+        """
+        Get a paired sample.
+
+        Returns:
+            Dictionary with keys for both increase and decrease edits.
+        """
+        sample = self.samples[idx]
+
+        # Handle both dict and tensor formats
+        if isinstance(sample.get("z_src"), torch.Tensor):
+            return sample
+
+        return {
+            "z_src": torch.tensor(sample["z_src"], dtype=torch.float32),
+            "param": sample["param"],
+            # Increase
+            "instruction_inc": sample["instruction_inc"],
+            "z_tgt_inc": torch.tensor(sample["z_tgt_inc"], dtype=torch.float32),
+            "delta_z_inc": torch.tensor(sample["delta_z_inc"], dtype=torch.float32),
+            "delta_inc": sample["delta_inc"],
+            # Decrease
+            "instruction_dec": sample["instruction_dec"],
+            "z_tgt_dec": torch.tensor(sample["z_tgt_dec"], dtype=torch.float32),
+            "delta_z_dec": torch.tensor(sample["delta_z_dec"], dtype=torch.float32),
+            "delta_dec": sample["delta_dec"],
+        }
+
+
+def collate_paired_edit_batch(batch: list[dict]) -> dict:
+    """
+    Collate function for paired DataLoader.
+
+    Args:
+        batch: List of paired sample dictionaries.
+
+    Returns:
+        Batched dictionary with stacked tensors and lists of instructions.
+    """
+    return {
+        "z_src": torch.stack([sample["z_src"] for sample in batch]),
+        "params": [sample["param"] for sample in batch],
+        # Increase direction
+        "instructions_inc": [sample["instruction_inc"] for sample in batch],
+        "z_tgt_inc": torch.stack([sample["z_tgt_inc"] for sample in batch]),
+        "delta_z_inc": torch.stack([sample["delta_z_inc"] for sample in batch]),
+        # Decrease direction
+        "instructions_dec": [sample["instruction_dec"] for sample in batch],
+        "z_tgt_dec": torch.stack([sample["z_tgt_dec"] for sample in batch]),
+        "delta_z_dec": torch.stack([sample["delta_z_dec"] for sample in batch]),
+    }

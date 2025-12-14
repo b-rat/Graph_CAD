@@ -130,6 +130,115 @@ def generate_single_edit_sample(
         return None
 
 
+def generate_paired_edit_sample(
+    vae: torch.nn.Module,
+    rng: np.random.Generator,
+    device: str,
+) -> dict | None:
+    """
+    Generate a paired edit sample (increase + decrease for same source bracket).
+
+    For contrastive learning: both samples share the same source bracket,
+    but have opposite edit directions for the same parameter.
+
+    Args:
+        vae: Trained VAE model
+        rng: Random number generator
+        device: Device for VAE inference
+
+    Returns:
+        Paired sample dict or None if generation fails
+    """
+    try:
+        # Sample source L-bracket
+        bracket_src = LBracket.random(rng)
+
+        # Choose random parameter to edit
+        param = rng.choice(list(PARAM_DELTA_RANGES.keys()))
+        delta_min, delta_max = PARAM_DELTA_RANGES[param]
+
+        # Generate a positive delta magnitude
+        delta_magnitude = rng.uniform(1.0, max(abs(delta_min), abs(delta_max)))
+
+        # Get old value
+        old_value = getattr(bracket_src, param)
+
+        # Create increase edit
+        bracket_inc = bracket_src.with_modified(param, delta_magnitude, clamp=True)
+        inc_new_value = getattr(bracket_inc, param)
+        inc_actual_delta = inc_new_value - old_value
+
+        # Create decrease edit
+        bracket_dec = bracket_src.with_modified(param, -delta_magnitude, clamp=True)
+        dec_new_value = getattr(bracket_dec, param)
+        dec_actual_delta = dec_new_value - old_value
+
+        # Skip if either delta was clamped to near-zero
+        if abs(inc_actual_delta) < 0.1 or abs(dec_actual_delta) < 0.1:
+            return None
+
+        # Extract graphs
+        graph_src = extract_graph_from_solid(bracket_src.to_solid())
+        graph_inc = extract_graph_from_solid(bracket_inc.to_solid())
+        graph_dec = extract_graph_from_solid(bracket_dec.to_solid())
+
+        # Encode through VAE
+        with torch.no_grad():
+            # Source
+            x_src = torch.tensor(graph_src.node_features, dtype=torch.float32, device=device)
+            edge_index_src = torch.tensor(graph_src.edge_index, dtype=torch.long, device=device)
+            edge_attr_src = torch.tensor(graph_src.edge_features, dtype=torch.float32, device=device)
+            batch_src = torch.zeros(x_src.shape[0], dtype=torch.long, device=device)
+
+            # Increase target
+            x_inc = torch.tensor(graph_inc.node_features, dtype=torch.float32, device=device)
+            edge_index_inc = torch.tensor(graph_inc.edge_index, dtype=torch.long, device=device)
+            edge_attr_inc = torch.tensor(graph_inc.edge_features, dtype=torch.float32, device=device)
+            batch_inc = torch.zeros(x_inc.shape[0], dtype=torch.long, device=device)
+
+            # Decrease target
+            x_dec = torch.tensor(graph_dec.node_features, dtype=torch.float32, device=device)
+            edge_index_dec = torch.tensor(graph_dec.edge_index, dtype=torch.long, device=device)
+            edge_attr_dec = torch.tensor(graph_dec.edge_features, dtype=torch.float32, device=device)
+            batch_dec = torch.zeros(x_dec.shape[0], dtype=torch.long, device=device)
+
+            # Encode all three
+            mu_src, _ = vae.encode(x_src, edge_index_src, edge_attr_src, batch_src)
+            mu_inc, _ = vae.encode(x_inc, edge_index_inc, edge_attr_inc, batch_inc)
+            mu_dec, _ = vae.encode(x_dec, edge_index_dec, edge_attr_dec, batch_dec)
+
+            z_src = mu_src.squeeze(0).cpu().numpy()
+            z_inc = mu_inc.squeeze(0).cpu().numpy()
+            z_dec = mu_dec.squeeze(0).cpu().numpy()
+
+            delta_z_inc = z_inc - z_src
+            delta_z_dec = z_dec - z_src
+
+        # Generate instructions
+        instruction_inc = generate_instruction(param, inc_actual_delta, old_value, rng)
+        instruction_dec = generate_instruction(param, dec_actual_delta, old_value, rng)
+
+        return {
+            "z_src": z_src.tolist(),
+            "param": param,
+            # Increase direction
+            "instruction_inc": instruction_inc,
+            "z_tgt_inc": z_inc.tolist(),
+            "delta_z_inc": delta_z_inc.tolist(),
+            "delta_inc": float(inc_actual_delta),
+            # Decrease direction
+            "instruction_dec": instruction_dec,
+            "z_tgt_dec": z_dec.tolist(),
+            "delta_z_dec": delta_z_dec.tolist(),
+            "delta_dec": float(dec_actual_delta),
+            "edit_type": "paired",
+        }
+
+    except Exception as e:
+        print(f"Warning: Failed to generate paired sample: {e}")
+        return None
+
+
 def generate_compound_edit_sample(
     vae: torch.nn.Module,
     rng: np.random.Generator,
@@ -342,6 +451,53 @@ def generate_dataset(
     return samples
 
 
+def generate_paired_dataset(
+    vae: torch.nn.Module,
+    num_pairs: int,
+    device: str,
+    seed: int = 42,
+) -> list[dict]:
+    """
+    Generate dataset of paired edit samples for contrastive learning.
+
+    Each sample contains both increase and decrease edits for the same
+    source bracket and parameter.
+
+    Args:
+        vae: Trained VAE model
+        num_pairs: Number of paired samples to generate
+        device: Device for VAE inference
+        seed: Random seed
+
+    Returns:
+        List of paired sample dictionaries
+    """
+    rng = np.random.default_rng(seed)
+    samples = []
+
+    print(f"Generating {num_pairs} paired edit samples...")
+
+    pbar = tqdm(total=num_pairs, desc="Paired edits")
+    attempts = 0
+    max_attempts = num_pairs * 3
+
+    while len(samples) < num_pairs:
+        sample = generate_paired_edit_sample(vae, rng, device)
+        if sample is not None:
+            samples.append(sample)
+            pbar.update(1)
+        attempts += 1
+        if attempts > max_attempts:
+            print(f"Warning: Could only generate {len(samples)} paired samples after {attempts} attempts")
+            break
+    pbar.close()
+
+    # Shuffle
+    rng.shuffle(samples)
+
+    return samples
+
+
 def main():
     parser = argparse.ArgumentParser(description="Generate latent edit training data")
     parser.add_argument(
@@ -386,6 +542,11 @@ def main():
         default=0.1,
         help="Fraction of data for testing",
     )
+    parser.add_argument(
+        "--paired",
+        action="store_true",
+        help="Generate paired samples for contrastive learning (increase/decrease pairs)",
+    )
 
     args = parser.parse_args()
 
@@ -401,13 +562,22 @@ def main():
     print(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
 
     # Generate samples
-    print(f"\nGenerating {args.num_samples} samples...")
-    samples = generate_dataset(
-        vae=vae,
-        num_samples=args.num_samples,
-        device=args.device,
-        seed=args.seed,
-    )
+    if args.paired:
+        print(f"\nGenerating {args.num_samples} paired samples for contrastive learning...")
+        samples = generate_paired_dataset(
+            vae=vae,
+            num_pairs=args.num_samples,
+            device=args.device,
+            seed=args.seed,
+        )
+    else:
+        print(f"\nGenerating {args.num_samples} samples...")
+        samples = generate_dataset(
+            vae=vae,
+            num_samples=args.num_samples,
+            device=args.device,
+            seed=args.seed,
+        )
 
     print(f"\nGenerated {len(samples)} samples")
 
@@ -446,6 +616,7 @@ def main():
         "val_size": len(val_samples),
         "test_size": len(test_samples),
         "seed": args.seed,
+        "paired": args.paired,
     }
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
