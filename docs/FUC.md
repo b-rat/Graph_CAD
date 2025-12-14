@@ -106,3 +106,135 @@ python scripts/train_latent_editor.py \
     --gradient-accumulation 4 \
     --output-dir outputs/latent_editor
 ```
+
+```bash
+# On runpod, run:
+# Quick test (4 trials)
+python scripts/explore_instruction_domain.py --num-brackets 1 --quick
+# Full exploration (480 trials with 10 brackets)
+python scripts/explore_instruction_domain.py --num-brackets 10
+# Larger study
+python scripts/explore_instruction_domain.py --num-brackets 50 --output outputs/exploration/full_study_251213.json
+```
+
+```bash
+python scripts/train_vae.py \
+    --latent-dim 16 --target-beta 0.01 --free-bits 2.0 \
+    --aux-weight 1.0 \
+    --output-dir outputs/vae_aux
+```
+
+```bash
+python scripts/train_feature_regressor.py \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --train-size 10000 --epochs 100 \
+    --output-dir outputs/feature_regressor_aux && \
+python scripts/generate_edit_data.py \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --num-samples 50000 --output data/edit_data_aux && \
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_aux --epochs 10 \
+    --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_aux
+
+# After training, test with:
+python scripts/infer_latent_editor.py \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --regressor-checkpoint outputs/feature_regressor_aux/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_aux/best_model.pt \
+    --random-bracket \
+    --instruction "make leg1 20mm longer"
+```
+
+```bash
+# Option 3: Separate sessions
+tmux new -s job1
+# run job 1, then Ctrl+b d to detach
+tmux new -s job2
+# run job 2, then Ctrl+b d to detach
+tmux new -s monitor
+watch -n 5 nvidia-smi # monitors gpu performance every 5 seconds
+# Switch: 
+tmux attach -t job1
+
+# Quick reference:
+Ctrl+b d # - detach (jobs keep running)
+tmux ls # - list sessions
+tmux attach -t <name> # - reattach
+```
+
+
+Ablation to be done in parallel
+```bash
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_aux \
+    --epochs 20 \
+    --learning-rate 2e-4 \
+    --batch-size 8 \
+    --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_aux_ep20_lr2e4
+
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_aux \
+    --epochs 20 \
+    --learning-rate 1e-4 \
+    --batch-size 8 \
+    --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_aux_ep20_lr1e4
+```
+
+```bash
+python scripts/infer_latent_editor.py \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --regressor-checkpoint outputs/feature_regressor_aux/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_aux_ep20_lr2e4/checkpoint_epoch_11.pt \
+    --random-bracket \
+    --instruction "make leg1 20mm longer" \
+    --seed $RANDOM \
+    --verbose
+```
+
+```bash
+python scripts/explore_instruction_domain.py \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --regressor-checkpoint outputs/feature_regressor_aux/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_aux_ep20_lr1e4/best_model.pt \
+    --num-brackets 50 \
+    --output outputs/exploration/full_study_251214_best_lr1e4.json
+```
+
+```bash
+python3 -c "
+import json
+import numpy as np
+data = json.load(open('data/edit_data_aux/train.json'))
+leg1_inc = [s['delta_z'] for s in data if 'leg1' in s['instruction'].lower() and 'longer' in s['instruction'].lower()]
+leg2_inc = [s['delta_z'] for s in data if 'leg2' in s['instruction'].lower() and 'longer' in s['instruction'].lower()]
+m1, m2 = np.mean(leg1_inc, axis=0), np.mean(leg2_inc, axis=0)
+cos = np.dot(m1,m2)/(np.linalg.norm(m1)*np.linalg.norm(m2))
+print(f'Cosine(leg1_inc, leg2_inc): {cos:.3f}')
+print('Should be low/negative if leg1 and leg2 are distinguishable')
+"
+```
+
+```bash
+python scripts/explore_instruction_domain.py \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --regressor-checkpoint outputs/feature_regressor_aux/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_aux_ep20_lr2e4/checkpoint_epoch_11.pt \
+    --num-brackets 50 \
+    --output outputs/exploration/full_study_251213.json
+```
+
+```bash
+python scripts/generate_edit_data.py \
+    --paired \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data_paired && \
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_paired \
+    --contrastive-weight 0.5 \
+    --epochs 20 \
+    --output-dir outputs/latent_editor_contrastive
+```

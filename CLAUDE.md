@@ -433,7 +433,7 @@ When extending beyond L-brackets:
 
 **Key insight**: The LLM can reason over entangled latent spaces. Perfect disentanglement is not required—the editor learns the semantics during training.
 
-## PoC Success Criteria (Updated — Dec 2024)
+## PoC Success Criteria (Updated — Dec 2025)
 
 ### Component Metrics (aux-VAE)
 
