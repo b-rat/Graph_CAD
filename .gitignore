@@ -222,3 +222,5 @@ outputs_251211
 wandb/
 mlruns/
 lightning_logs/
+data/edit_data/
+data/.DS_Store
