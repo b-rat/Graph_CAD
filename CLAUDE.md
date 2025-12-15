@@ -295,9 +295,11 @@ Cosine(increase_delta, decrease_delta) per parameter:
 
 ---
 
-## Contrastive Learning (In Progress)
+## Shortcut Problem Solutions (In Progress — Dec 2024)
 
-### Approach: Paired Batch Contrastive Loss
+Two approaches are being tested in parallel to fix the directional bias shortcut:
+
+### Approach 1: Contrastive Learning
 
 Force the model to distinguish increase vs decrease by training on paired samples:
 
@@ -313,24 +315,14 @@ contrastive_loss = cosine_similarity(delta_inc, delta_dec) + 1  # minimize when 
 loss = mse_loss + λ * contrastive_loss
 ```
 
-### Implementation
-
+**Implementation:**
 1. **Data generation**: `--paired` flag generates matched increase/decrease samples
 2. **Dataset**: `PairedLatentEditDataset` holds paired samples
 3. **Training**: `train_epoch_paired` does two forward passes per sample
 4. **Loss**: Combines MSE for accuracy + contrastive for direction
 
-### Training Commands
-
+**Training Command:**
 ```bash
-# Generate paired data
-python scripts/generate_edit_data.py \
-    --paired \
-    --vae-checkpoint outputs/vae_aux/best_model.pt \
-    --num-samples 50000 \
-    --output data/edit_data_paired
-
-# Train with contrastive loss
 python scripts/train_latent_editor.py \
     --data-dir data/edit_data_paired \
     --contrastive-weight 0.5 \
@@ -338,11 +330,72 @@ python scripts/train_latent_editor.py \
     --output-dir outputs/latent_editor_contrastive
 ```
 
-### Expected Outcome
+**Key Metrics:**
+- `mean_cos_sim`: Should decrease toward -1.0 (opposite deltas for opposite instructions)
+- Target: < -0.5
 
-- `mean_cos_sim` should decrease toward -1.0 (opposite directions)
-- Increase/decrease accuracy should become symmetric (~75%+ both)
-- May trade some MSE accuracy for directional control
+**Early Results (8 epochs):**
+- Loss: 0.271, Delta MSE: 0.0129, CosSim: -0.484
+- ~95% of loss from contrastive component
+- CosSim oscillating around -0.5
+
+---
+
+### Approach 2: Auxiliary Direction Classifier
+
+Add a classification head that explicitly predicts increase vs decrease direction, forcing the model to encode direction information in its hidden state.
+
+```python
+# Architecture addition:
+hidden_state → DirectionClassifier (MLP: 4096→256→64→1) → direction_logit
+
+# Loss:
+direction_loss = BCE(direction_logit, direction_target)  # 1.0=increase, 0.0=decrease
+total_loss = delta_weight * MSE + direction_weight * direction_loss
+```
+
+**Implementation:**
+1. **`DirectionClassifier`** in `latent_editor.py`: Small MLP (4096→256→64→1) predicting binary direction
+2. **`direction_loss()`** in `edit_trainer.py`: BCE loss + accuracy tracking
+3. **`train_epoch_with_direction()`**: Training loop with direction supervision
+4. **Dataset**: Direction labels derived from sign of param_deltas (1.0=increase, 0.0=decrease)
+
+**Key Difference from Contrastive:**
+- **Contrastive**: 2 forward passes per batch (paired samples), cosine similarity loss
+- **Direction Classifier**: 1 forward pass per batch, BCE classification loss (faster, uses existing data)
+
+**Training Command:**
+```bash
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data \
+    --direction-weight 0.5 \
+    --epochs 20 \
+    --output-dir outputs/latent_editor_direction
+```
+
+**Key Metrics:**
+- `direction_accuracy`: Should increase toward 90%+ (model correctly classifies increase vs decrease)
+- `direction_loss`: Should decrease
+
+---
+
+### Parallel Testing Plan
+
+Both approaches run simultaneously on separate RunPods:
+- **Pod 1**: Contrastive learning with `--contrastive-weight 0.5`
+- **Pod 2**: Direction classifier with `--direction-weight 0.5`
+
+**Comparison Criteria:**
+| Metric | Contrastive | Direction Classifier |
+|--------|-------------|---------------------|
+| Training speed | Slower (2 fwd passes) | Faster (1 fwd pass) |
+| Data requirement | Paired samples | Standard samples |
+| Primary signal | CosSim → -1.0 | Dir Accuracy → 90%+ |
+
+**Next Steps:**
+1. Complete both training runs (20 epochs each)
+2. Evaluate end-to-end direction accuracy on held-out test set
+3. Select better approach or combine (direction classifier may bootstrap, then fine-tune with contrastive)
 
 ---
 
@@ -385,6 +438,14 @@ python scripts/train_latent_editor.py \
     --epochs 20 \
     --batch-size 8 --gradient-accumulation 4 \
     --output-dir outputs/latent_editor_contrastive
+
+# Latent Editor training WITH direction classifier (alternative to contrastive)
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data \
+    --direction-weight 0.5 \
+    --epochs 20 \
+    --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_direction
 ```
 
 ## Inference

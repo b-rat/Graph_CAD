@@ -24,6 +24,8 @@ git lfs pull
 pip install -r requirements-cloud-gpu.txt
 pip install -e .
 pip install hf_transfer
+echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc # changes default download for hugging face to network volume
+source ~/.bashrc            # re-read bash file
 git add -f outputs/latent_editor/best_model.pt
 git add -f outputs/latent_editor/training_results.json
 git commit -m "Add trained latent editor checkpoint"
@@ -31,6 +33,8 @@ git push
 git reset                   #unstage everything add file name to unstage single file
 git reset --soft HEAD~1     #keep changes staged remove commit one commit back
 git reset HEAD~1            #remove commit and unstage
+apt update && apt install tmux -y
+apt-get update && apt-get install -y libxrender1 libxext6
 ```
 
 ```bash
@@ -43,6 +47,8 @@ python scripts/train_latent_editor.py \
 ```
 
 ```bash
+apt update && apt install tmux -y
+
 # Start a new named session
 tmux new -s training
 
@@ -238,3 +244,26 @@ python scripts/train_latent_editor.py \
     --epochs 20 \
     --output-dir outputs/latent_editor_contrastive
 ```
+
+```bash
+python scripts/generate_edit_data.py \
+    --vae-checkpoint outputs/vae_aux/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data_direction && \
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_direction \
+    --direction-weight 0.5 \
+    --epochs 20 \
+    --output-dir outputs/latent_editor_direction
+```
+
+```bash
+echo $HF_HOME
+To reclaim container disk space:
+# Set HF_HOME first to load huggingface model into network volume
+export HF_HOME=/workspace/.cache/huggingface/
+# Delete the container disk cache
+rm -rf ~/.cache/huggingface/
+# Now container disk drops from 83% to ~10-15%
+```
+

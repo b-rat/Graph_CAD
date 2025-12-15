@@ -1,0 +1,9 @@
+{
+  "vae_checkpoint": "outputs/vae_16d_lowbeta/best_model.pt",
+  "latent_dim": 16,
+  "num_samples": 50000,
+  "train_size": 40000,
+  "val_size": 5000,
+  "test_size": 5000,
+  "seed": 42
+}
