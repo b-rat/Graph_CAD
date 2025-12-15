@@ -27,6 +27,7 @@ class EditLossConfig:
     graph_weight: float = 0.0  # Secondary: MSE on decoded graphs
     l1_weight: float = 0.0  # Optional: L1 regularization on delta
     contrastive_weight: float = 0.0  # Contrastive loss for paired samples
+    direction_weight: float = 0.0  # Auxiliary direction classifier loss
 
     # Normalization
     normalize_delta: bool = False  # Normalize delta by magnitude
@@ -179,6 +180,37 @@ def contrastive_loss(
     return loss, {
         "contrastive_loss": loss,
         "mean_cos_sim": cos_sim.mean(),
+    }
+
+
+def direction_loss(
+    direction_logit: torch.Tensor,
+    direction_target: torch.Tensor,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Compute direction classification loss.
+
+    Binary cross-entropy loss for predicting increase (1) vs decrease (0).
+    Forces the model to encode direction information explicitly.
+
+    Args:
+        direction_logit: Predicted direction logits, shape (batch,)
+        direction_target: Target direction labels, shape (batch,)
+            1.0 = increase, 0.0 = decrease
+
+    Returns:
+        (loss, loss_dict) with direction loss and accuracy
+    """
+    loss = F.binary_cross_entropy_with_logits(direction_logit, direction_target)
+
+    # Compute accuracy
+    with torch.no_grad():
+        predictions = (direction_logit > 0).float()
+        accuracy = (predictions == direction_target).float().mean()
+
+    return loss, {
+        "direction_loss": loss,
+        "direction_accuracy": accuracy,
     }
 
 
@@ -598,6 +630,184 @@ def evaluate(
     return metrics
 
 
+def train_epoch_with_direction(
+    editor: LatentEditor,
+    loader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    device: str,
+    config: EditLossConfig | None = None,
+    vae: GraphVAE | None = None,
+    gradient_accumulation_steps: int = 1,
+    max_grad_norm: float = 1.0,
+) -> dict[str, float]:
+    """
+    Train editor for one epoch with direction classifier.
+
+    Uses auxiliary direction classification loss alongside MSE.
+    Requires dataset with direction labels.
+
+    Args:
+        editor: LatentEditor model (must have direction_classifier enabled)
+        loader: DataLoader for edit samples (with direction labels)
+        optimizer: Optimizer
+        device: Device to train on
+        config: Loss configuration (should have direction_weight > 0)
+        vae: Optional VAE for graph reconstruction loss
+        gradient_accumulation_steps: Number of steps to accumulate gradients
+        max_grad_norm: Maximum gradient norm for clipping
+
+    Returns:
+        Dictionary with averaged metrics for the epoch
+    """
+    if editor.direction_classifier is None:
+        raise ValueError("Direction classifier not enabled on editor")
+
+    editor.train()
+    if vae is not None:
+        vae.eval()
+
+    if config is None:
+        config = EditLossConfig()
+
+    total_loss = 0.0
+    total_delta_mse = 0.0
+    total_direction_loss = 0.0
+    total_direction_acc = 0.0
+    num_batches = 0
+
+    optimizer.zero_grad()
+
+    for batch_idx, batch in enumerate(loader):
+        z_src = batch["z_src"].to(device)
+        z_tgt = batch["z_tgt"].to(device)
+        delta_z = batch["delta_z"].to(device)
+        instructions = batch["instructions"]
+        direction_target = batch["direction"].to(device)
+
+        # Forward pass
+        outputs = editor(z_src, instructions)
+        predicted_delta = outputs["delta_z"]
+        direction_logit = outputs["direction_logit"]
+
+        # Compute MSE loss
+        mse_loss = F.mse_loss(predicted_delta, delta_z)
+
+        # Compute direction loss
+        dir_loss, dir_dict = direction_loss(direction_logit, direction_target)
+
+        # Total loss
+        loss = config.delta_weight * mse_loss + config.direction_weight * dir_loss
+
+        # Scale loss for gradient accumulation
+        loss = loss / gradient_accumulation_steps
+        loss.backward()
+
+        # Accumulate metrics (unscaled)
+        total_loss += (config.delta_weight * mse_loss + config.direction_weight * dir_loss).item()
+        total_delta_mse += mse_loss.item()
+        total_direction_loss += dir_loss.item()
+        total_direction_acc += dir_dict["direction_accuracy"].item()
+        num_batches += 1
+
+        # Update weights
+        if (batch_idx + 1) % gradient_accumulation_steps == 0:
+            torch.nn.utils.clip_grad_norm_(
+                editor.get_trainable_parameters(), max_grad_norm
+            )
+            optimizer.step()
+            optimizer.zero_grad()
+
+    # Handle remaining gradients
+    if num_batches % gradient_accumulation_steps != 0:
+        torch.nn.utils.clip_grad_norm_(
+            editor.get_trainable_parameters(), max_grad_norm
+        )
+        optimizer.step()
+        optimizer.zero_grad()
+
+    # Average metrics
+    metrics = {
+        "loss": total_loss / num_batches,
+        "delta_mse": total_delta_mse / num_batches,
+        "direction_loss": total_direction_loss / num_batches,
+        "direction_accuracy": total_direction_acc / num_batches,
+    }
+
+    return metrics
+
+
+@torch.no_grad()
+def evaluate_with_direction(
+    editor: LatentEditor,
+    loader: DataLoader,
+    device: str,
+    config: EditLossConfig | None = None,
+) -> dict[str, float]:
+    """
+    Evaluate editor with direction classifier on a data loader.
+
+    Args:
+        editor: LatentEditor model (must have direction_classifier enabled)
+        loader: DataLoader for edit samples (with direction labels)
+        device: Device to evaluate on
+        config: Loss configuration
+
+    Returns:
+        Dictionary with evaluation metrics
+    """
+    if editor.direction_classifier is None:
+        raise ValueError("Direction classifier not enabled on editor")
+
+    editor.eval()
+
+    if config is None:
+        config = EditLossConfig()
+
+    total_loss = 0.0
+    total_delta_mse = 0.0
+    total_delta_mae = 0.0
+    total_direction_loss = 0.0
+    total_direction_acc = 0.0
+    num_batches = 0
+
+    for batch in loader:
+        z_src = batch["z_src"].to(device)
+        delta_z = batch["delta_z"].to(device)
+        instructions = batch["instructions"]
+        direction_target = batch["direction"].to(device)
+
+        # Forward pass
+        outputs = editor(z_src, instructions)
+        predicted_delta = outputs["delta_z"]
+        direction_logit = outputs["direction_logit"]
+
+        # Compute losses
+        mse_loss = F.mse_loss(predicted_delta, delta_z)
+        dir_loss, dir_dict = direction_loss(direction_logit, direction_target)
+
+        # Total loss
+        loss = config.delta_weight * mse_loss + config.direction_weight * dir_loss
+
+        # Accumulate metrics
+        total_loss += loss.item()
+        total_delta_mse += mse_loss.item()
+        total_delta_mae += (predicted_delta - delta_z).abs().mean().item()
+        total_direction_loss += dir_loss.item()
+        total_direction_acc += dir_dict["direction_accuracy"].item()
+        num_batches += 1
+
+    # Average metrics
+    metrics = {
+        "loss": total_loss / num_batches,
+        "delta_mse": total_delta_mse / num_batches,
+        "delta_mae": total_delta_mae / num_batches,
+        "direction_loss": total_direction_loss / num_batches,
+        "direction_accuracy": total_direction_acc / num_batches,
+    }
+
+    return metrics
+
+
 def save_editor_checkpoint(
     editor: LatentEditor,
     optimizer: torch.optim.Optimizer,
@@ -608,7 +818,7 @@ def save_editor_checkpoint(
     """
     Save editor checkpoint.
 
-    Saves projectors and LoRA weights (not full LLM).
+    Saves projectors, direction classifier, and LoRA weights (not full LLM).
     """
     checkpoint = {
         "epoch": epoch,
@@ -617,7 +827,12 @@ def save_editor_checkpoint(
         "output_projector_state": editor.output_projector.state_dict(),
         "optimizer_state": optimizer.state_dict(),
         "metrics": metrics,
+        "has_direction_classifier": editor.direction_classifier is not None,
     }
+
+    # Save direction classifier if present
+    if editor.direction_classifier is not None:
+        checkpoint["direction_classifier_state"] = editor.direction_classifier.state_dict()
 
     # Save LoRA weights if available
     if editor.llm is not None:
@@ -659,6 +874,10 @@ def load_editor_checkpoint(
     # Load projector weights
     editor.latent_projector.load_state_dict(checkpoint["latent_projector_state"])
     editor.output_projector.load_state_dict(checkpoint["output_projector_state"])
+
+    # Load direction classifier weights if available
+    if "direction_classifier_state" in checkpoint and editor.direction_classifier is not None:
+        editor.direction_classifier.load_state_dict(checkpoint["direction_classifier_state"])
 
     # Load LoRA weights if available
     if "lora_state" in checkpoint and editor.llm is not None:

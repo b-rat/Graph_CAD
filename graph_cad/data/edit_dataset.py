@@ -200,13 +200,24 @@ class LatentEditDataset(Dataset):
             data = json.load(f)
 
         for item in data:
-            self.samples.append({
+            sample = {
                 "instruction": item["instruction"],
                 "z_src": torch.tensor(item["z_src"], dtype=torch.float32),
                 "z_tgt": torch.tensor(item["z_tgt"], dtype=torch.float32),
                 "delta_z": torch.tensor(item["delta_z"], dtype=torch.float32),
                 "param_deltas": item.get("param_deltas", {}),
-            })
+            }
+            # Load direction label if present, otherwise derive from param_deltas
+            if "direction" in item:
+                sample["direction"] = torch.tensor(item["direction"], dtype=torch.float32)
+            elif item.get("param_deltas"):
+                # Derive direction from first (usually only) param delta
+                delta_val = list(item["param_deltas"].values())[0]
+                sample["direction"] = torch.tensor(1.0 if delta_val > 0 else 0.0, dtype=torch.float32)
+            else:
+                # Default to increase for noop/unknown
+                sample["direction"] = torch.tensor(0.5, dtype=torch.float32)
+            self.samples.append(sample)
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -216,7 +227,7 @@ class LatentEditDataset(Dataset):
         Get a sample.
 
         Returns:
-            Dictionary with keys: instruction, z_src, z_tgt, delta_z
+            Dictionary with keys: instruction, z_src, z_tgt, delta_z, direction
         """
         sample = self.samples[idx]
 
@@ -224,13 +235,17 @@ class LatentEditDataset(Dataset):
         if isinstance(sample.get("z_src"), torch.Tensor):
             return sample
 
-        return {
+        result = {
             "instruction": sample["instruction"],
             "z_src": torch.tensor(sample["z_src"], dtype=torch.float32),
             "z_tgt": torch.tensor(sample["z_tgt"], dtype=torch.float32),
             "delta_z": torch.tensor(sample["delta_z"], dtype=torch.float32),
             "param_deltas": sample.get("param_deltas", {}),
         }
+        # Add direction if present
+        if "direction" in sample:
+            result["direction"] = torch.tensor(sample["direction"], dtype=torch.float32)
+        return result
 
     def save(self, path: str | Path) -> None:
         """Save dataset to JSON file."""
@@ -262,12 +277,16 @@ def collate_edit_batch(batch: list[dict]) -> dict:
     Returns:
         Batched dictionary with stacked tensors and list of instructions.
     """
-    return {
+    result = {
         "instructions": [sample["instruction"] for sample in batch],
         "z_src": torch.stack([sample["z_src"] for sample in batch]),
         "z_tgt": torch.stack([sample["z_tgt"] for sample in batch]),
         "delta_z": torch.stack([sample["delta_z"] for sample in batch]),
     }
+    # Add direction if present in samples
+    if "direction" in batch[0]:
+        result["direction"] = torch.stack([sample["direction"] for sample in batch])
+    return result
 
 
 class PairedLatentEditDataset(Dataset):

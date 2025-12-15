@@ -121,6 +121,43 @@ class OutputProjector(nn.Module):
         return self.mlp(hidden)
 
 
+class DirectionClassifier(nn.Module):
+    """
+    Auxiliary classifier that predicts edit direction (increase/decrease).
+
+    Takes LLM hidden state and predicts a binary direction label.
+    This forces the model to encode direction information explicitly,
+    preventing the shortcut of always predicting a fixed direction.
+    """
+
+    def __init__(self, config: LatentEditorConfig):
+        super().__init__()
+        self.config = config
+
+        self.mlp = nn.Sequential(
+            nn.Linear(config.llm_hidden_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, 64),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(64, 1),  # Binary: increase (+) vs decrease (-)
+        )
+
+    def forward(self, hidden: torch.Tensor) -> torch.Tensor:
+        """
+        Predict direction from hidden state.
+
+        Args:
+            hidden: LLM hidden state, shape (batch_size, llm_hidden_dim)
+
+        Returns:
+            Direction logit, shape (batch_size, 1)
+            Positive logit = increase, Negative logit = decrease
+        """
+        return self.mlp(hidden)
+
+
 class LatentEditor(nn.Module):
     """
     LLM-based latent editor.
@@ -136,6 +173,8 @@ class LatentEditor(nn.Module):
         5. Extract last hidden state
         6. Project to latent delta
         7. Apply residual: z_edited = z_src + delta
+
+    Optional: Direction classifier for auxiliary supervision.
     """
 
     def __init__(
@@ -143,6 +182,7 @@ class LatentEditor(nn.Module):
         config: LatentEditorConfig,
         llm: PreTrainedModel | None = None,
         tokenizer: PreTrainedTokenizer | None = None,
+        use_direction_classifier: bool = False,
     ):
         super().__init__()
         self.config = config
@@ -150,6 +190,9 @@ class LatentEditor(nn.Module):
         # Projectors (always trainable)
         self.latent_projector = LatentProjector(config)
         self.output_projector = OutputProjector(config)
+
+        # Optional direction classifier for auxiliary supervision
+        self.direction_classifier = DirectionClassifier(config) if use_direction_classifier else None
 
         # LLM and tokenizer (loaded separately or passed in)
         self.llm = llm
@@ -159,6 +202,12 @@ class LatentEditor(nn.Module):
         """Set the LLM and tokenizer after initialization."""
         self.llm = llm
         self.tokenizer = tokenizer
+
+    def enable_direction_classifier(self, device: str | torch.device = "cpu") -> None:
+        """Enable direction classifier (can be called after initialization)."""
+        if self.direction_classifier is None:
+            self.direction_classifier = DirectionClassifier(self.config)
+            self.direction_classifier.to(device)
 
     def forward(
         self,
@@ -241,6 +290,11 @@ class LatentEditor(nn.Module):
         if return_hidden:
             result["hidden"] = last_token_hidden
 
+        # 9. Optional direction classification
+        if self.direction_classifier is not None:
+            direction_logit = self.direction_classifier(last_token_hidden)
+            result["direction_logit"] = direction_logit.squeeze(-1)  # (batch,)
+
         return result
 
     def edit(
@@ -272,12 +326,16 @@ class LatentEditor(nn.Module):
         return z_edited
 
     def get_trainable_parameters(self) -> list[nn.Parameter]:
-        """Get list of trainable parameters (projectors + LoRA)."""
+        """Get list of trainable parameters (projectors + LoRA + direction classifier)."""
         params = []
 
         # Projector parameters (always trainable)
         params.extend(self.latent_projector.parameters())
         params.extend(self.output_projector.parameters())
+
+        # Direction classifier parameters (if enabled)
+        if self.direction_classifier is not None:
+            params.extend(self.direction_classifier.parameters())
 
         # LoRA parameters (if LLM is set and has LoRA)
         if self.llm is not None:

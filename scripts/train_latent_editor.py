@@ -42,9 +42,11 @@ from graph_cad.training.edit_trainer import (
     EditLossConfig,
     evaluate,
     evaluate_paired,
+    evaluate_with_direction,
     save_editor_checkpoint,
     train_epoch,
     train_epoch_paired,
+    train_epoch_with_direction,
 )
 
 
@@ -163,6 +165,12 @@ def main():
         type=float,
         default=0.0,
         help="Weight for contrastive loss (requires paired data)",
+    )
+    parser.add_argument(
+        "--direction-weight",
+        type=float,
+        default=0.0,
+        help="Weight for direction classifier loss (auxiliary supervision)",
     )
     parser.add_argument(
         "--vae-checkpoint",
@@ -290,9 +298,14 @@ def main():
         use_8bit=args.use_8bit and not args.no_quantization and not args.use_4bit,
     )
 
+    # Check if using direction classifier
+    use_direction = args.direction_weight > 0
+
     # Create editor (without LLM initially)
     print("\nCreating LatentEditor...")
-    editor = LatentEditor(config)
+    editor = LatentEditor(config, use_direction_classifier=use_direction)
+    if use_direction:
+        print("  Direction classifier: ENABLED")
 
     # Load LLM with LoRA
     print(f"Loading {args.model_name} with LoRA...")
@@ -305,6 +318,8 @@ def main():
     # Move projectors to device
     editor.latent_projector.to(device)
     editor.output_projector.to(device)
+    if editor.direction_classifier is not None:
+        editor.direction_classifier.to(device)
 
     print(f"\nTrainable parameters: {editor.num_trainable_params():,}")
 
@@ -313,10 +328,13 @@ def main():
         delta_weight=args.delta_weight,
         graph_weight=args.graph_weight,
         contrastive_weight=args.contrastive_weight,
+        direction_weight=args.direction_weight,
     )
 
     if args.contrastive_weight > 0:
         print(f"  Contrastive weight: {args.contrastive_weight}")
+    if args.direction_weight > 0:
+        print(f"  Direction weight: {args.direction_weight}")
 
     # Load VAE if using graph reconstruction loss
     vae = None
@@ -386,6 +404,17 @@ def main():
                 gradient_accumulation_steps=args.gradient_accumulation,
                 max_grad_norm=args.max_grad_norm,
             )
+        elif use_direction:
+            train_metrics = train_epoch_with_direction(
+                editor=editor,
+                loader=train_loader,
+                optimizer=optimizer,
+                device=device,
+                config=loss_config,
+                vae=vae,
+                gradient_accumulation_steps=args.gradient_accumulation,
+                max_grad_norm=args.max_grad_norm,
+            )
         else:
             train_metrics = train_epoch(
                 editor=editor,
@@ -404,6 +433,11 @@ def main():
                   f"Delta MSE: {train_metrics['delta_mse']:.6f}, "
                   f"Contrastive: {train_metrics['contrastive_loss']:.6f}, "
                   f"CosSim: {train_metrics['mean_cos_sim']:.3f}")
+        elif use_direction:
+            print(f"\nTrain - Loss: {train_metrics['loss']:.6f}, "
+                  f"Delta MSE: {train_metrics['delta_mse']:.6f}, "
+                  f"Dir Loss: {train_metrics['direction_loss']:.6f}, "
+                  f"Dir Acc: {train_metrics['direction_accuracy']:.3f}")
         else:
             print(f"\nTrain - Loss: {train_metrics['loss']:.6f}, "
                   f"Delta MSE: {train_metrics['delta_mse']:.6f}")
@@ -420,6 +454,17 @@ def main():
                   f"Delta MSE: {val_metrics['delta_mse']:.6f}, "
                   f"Delta MAE: {val_metrics['delta_mae']:.6f}, "
                   f"CosSim: {val_metrics['mean_cos_sim']:.3f}")
+        elif use_direction:
+            val_metrics = evaluate_with_direction(
+                editor=editor,
+                loader=val_loader,
+                device=device,
+                config=loss_config,
+            )
+            print(f"Val   - Loss: {val_metrics['loss']:.6f}, "
+                  f"Delta MSE: {val_metrics['delta_mse']:.6f}, "
+                  f"Delta MAE: {val_metrics['delta_mae']:.6f}, "
+                  f"Dir Acc: {val_metrics['direction_accuracy']:.3f}")
         else:
             val_metrics = evaluate(
                 editor=editor,

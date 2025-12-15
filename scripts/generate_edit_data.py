@@ -116,12 +116,16 @@ def generate_single_edit_sample(
         # Generate instruction
         instruction = generate_instruction(param, actual_delta, old_value, rng)
 
+        # Direction label: 1.0 = increase, 0.0 = decrease
+        direction = 1.0 if actual_delta > 0 else 0.0
+
         return {
             "instruction": instruction,
             "z_src": z_src.tolist(),
             "z_tgt": z_tgt.tolist(),
             "delta_z": delta_z.tolist(),
             "param_deltas": {param: float(actual_delta)},
+            "direction": direction,
             "edit_type": "single",
         }
 
@@ -295,12 +299,23 @@ def generate_compound_edit_sample(
             z_tgt = mu_tgt.squeeze(0).cpu().numpy()
             delta_z = z_tgt - z_src
 
+        # Direction for compound: use majority direction or 0.5 if mixed
+        positive_deltas = sum(1 for d in actual_deltas.values() if d > 0)
+        negative_deltas = sum(1 for d in actual_deltas.values() if d < 0)
+        if positive_deltas > negative_deltas:
+            direction = 1.0
+        elif negative_deltas > positive_deltas:
+            direction = 0.0
+        else:
+            direction = 0.5  # Ambiguous
+
         return {
             "instruction": instruction,
             "z_src": z_src.tolist(),
             "z_tgt": z_tgt.tolist(),
             "delta_z": delta_z.tolist(),
             "param_deltas": actual_deltas,
+            "direction": direction,
             "edit_type": "compound",
         }
 
@@ -352,6 +367,7 @@ def generate_noop_sample(
             "z_tgt": z.tolist(),
             "delta_z": [0.0] * len(z),
             "param_deltas": {},
+            "direction": 0.5,  # No direction for noop
             "edit_type": "noop",
         }
 
