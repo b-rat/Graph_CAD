@@ -334,10 +334,27 @@ python scripts/train_latent_editor.py \
 - `mean_cos_sim`: Should decrease toward -1.0 (opposite deltas for opposite instructions)
 - Target: < -0.5
 
-**Early Results (8 epochs):**
-- Loss: 0.271, Delta MSE: 0.0129, CosSim: -0.484
-- ~95% of loss from contrastive component
-- CosSim oscillating around -0.5
+**Initial Results (weight=0.5) — DIVERGED:**
+
+| Epoch | Loss | Delta MSE | CosSim |
+|-------|------|-----------|--------|
+| 8 | 0.271 | 0.0129 | -0.484 |
+| 12 | 0.297 | 0.0115 | -0.429 |
+
+- CosSim moved wrong direction (toward 0, less opposite)
+- ~95% of loss from contrastive component — **weight too high**
+- Training unstable due to gradient conflict between MSE and contrastive objectives
+
+**Fix: Lower contrastive weight to 0.1:**
+```bash
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_paired \
+    --contrastive-weight 0.1 \
+    --epochs 20 \
+    --output-dir outputs/latent_editor_contrastive_w0.1
+```
+
+At weight=0.1, contrastive loss should be ~50% of total instead of ~95%, giving MSE room to guide delta magnitudes while contrastive guides direction.
 
 ---
 
@@ -377,12 +394,27 @@ python scripts/train_latent_editor.py \
 - `direction_accuracy`: Should increase toward 90%+ (model correctly classifies increase vs decrease)
 - `direction_loss`: Should decrease
 
+**Early Results (3 epochs) — STABLE:**
+
+| Epoch | Dir Acc | Delta MSE | Val Loss |
+|-------|---------|-----------|----------|
+| 1 | 41.8% | 0.0150 | 0.365 |
+| 2 | 67.9% | 0.0102 | 0.211 |
+| 3 | 67.3% | 0.0090 | 0.209 |
+
+- Direction accuracy jumped from near-random (42%) to 68% in 2 epochs
+- Delta MSE improving alongside direction accuracy (no trade-off)
+- Train/val tracking together — no overfitting
+- Stable convergence — no divergence issues
+
+**Status**: On track to meet 70% direction accuracy target.
+
 ---
 
 ### Parallel Testing Plan
 
 Both approaches run simultaneously on separate RunPods:
-- **Pod 1**: Contrastive learning with `--contrastive-weight 0.5`
+- **Pod 1**: Contrastive learning with `--contrastive-weight 0.1` (lowered from 0.5 after divergence)
 - **Pod 2**: Direction classifier with `--direction-weight 0.5`
 
 **Comparison Criteria:**
@@ -391,6 +423,14 @@ Both approaches run simultaneously on separate RunPods:
 | Training speed | Slower (2 fwd passes) | Faster (1 fwd pass) |
 | Data requirement | Paired samples | Standard samples |
 | Primary signal | CosSim → -1.0 | Dir Accuracy → 90%+ |
+| Stability | Sensitive to weight | Stable |
+
+**Hyperparameter Findings:**
+| Approach | Weight | Result |
+|----------|--------|--------|
+| Contrastive | 0.5 | ❌ Diverged (CosSim → 0) |
+| Contrastive | 0.1 | 🔄 Testing |
+| Direction | 0.5 | ✓ Stable (68% acc @ epoch 3) |
 
 **Next Steps:**
 1. Complete both training runs (20 epochs each)
@@ -432,9 +472,10 @@ python scripts/generate_edit_data.py \
     --num-samples 50000 --output data/edit_data_paired
 
 # Latent Editor training WITH contrastive loss (cloud GPU, A40 recommended)
+# NOTE: weight=0.5 diverged; use 0.1 instead
 python scripts/train_latent_editor.py \
     --data-dir data/edit_data_paired \
-    --contrastive-weight 0.5 \
+    --contrastive-weight 0.1 \
     --epochs 20 \
     --batch-size 8 --gradient-accumulation 4 \
     --output-dir outputs/latent_editor_contrastive
