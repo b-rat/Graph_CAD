@@ -543,26 +543,35 @@ When extending beyond L-brackets:
 |--------|--------|----------|--------|
 | VAE Node MSE | < 0.01 | 0.00073 | ✓ |
 | VAE Effective Dims | > 50% | 100% (8/8 params encoded) | ✓ |
-| LLM Delta MSE | < 0.01 | 0.0055 | ✓ |
-| LLM Delta MAE | — | 0.043 | — |
+| LLM Delta MSE | < 0.01 | 0.006 | ✓ |
+| LLM Delta MAE | — | 0.045 | — |
 
-### End-to-End Metrics (Pre-Contrastive)
+### End-to-End Metrics — Direction Classifier Results (Dec 2025)
 
-| Metric | Target | Current | Status |
-|--------|--------|---------|--------|
-| Overall direction accuracy | > 70% | 52% | ❌ Blocked by shortcut |
-| Increase accuracy | > 70% | 8-100% (param dependent) | ❌ Asymmetric |
-| Decrease accuracy | > 70% | 4-95% (param dependent) | ❌ Asymmetric |
+**Overall: 52% → 80.2% (+28 pp improvement)** ✓
 
-### Targets for Contrastive Learning
+| Parameter | Overall | Increase | Decrease |
+|-----------|---------|----------|----------|
+| leg1_length | 69.8% | 40.5% | 99.0% |
+| leg2_length | 67.0% | 37.5% | 96.5% |
+| width | 88.7% | 79.3% | 98.0% |
+| thickness | **97.3%** | 94.7% | 100.0% |
+| hole1_diameter | 81.3% | 62.7% | 100.0% |
+| hole2_diameter | 85.3% | 70.7% | 100.0% |
 
-| Metric | Target | Notes |
-|--------|--------|-------|
-| mean_cos_sim | < -0.5 | Opposite deltas for opposite instructions |
-| Inc/Dec symmetry | < 20% gap | Both directions ~equally accurate |
-| Direction accuracy | > 70% | For all parameters |
+**Key findings:**
+- Direction classifier broke the shortcut problem
+- Decrease operations near-perfect (96-100%)
+- Increase operations improved but still weaker (37-95%)
+- leg1/leg2 hardest due to latent entanglement
+- thickness/width/holes easiest to edit correctly
 
-**Current blocker**: Model takes shortcut (always predict fixed direction per parameter). Contrastive learning should fix this by explicitly penalizing same-direction predictions for opposite instructions.
+### Remaining Limitations
+
+1. **Increase/decrease asymmetry**: Model still better at decreasing than increasing parameters
+2. **Magnitude accuracy**: 20mm targets typically produce 2-10mm actual changes (VAE bottleneck)
+3. **leg1/leg2 entanglement**: These parameters remain hardest to edit independently
+4. **Boundary saturation**: Parameters near min/max show reduced edit effectiveness
 
 ## Technical Stack
 

@@ -193,7 +193,7 @@ python scripts/train_latent_editor.py \
 python scripts/infer_latent_editor.py \
     --vae-checkpoint outputs/vae_aux/best_model.pt \
     --regressor-checkpoint outputs/feature_regressor_aux/best_model.pt \
-    --editor-checkpoint outputs/latent_editor_aux_ep20_lr2e4/checkpoint_epoch_11.pt \
+    --editor-checkpoint outputs/latent_editor_direction/best_model.pt \
     --random-bracket \
     --instruction "make leg1 20mm longer" \
     --seed $RANDOM \
@@ -227,9 +227,9 @@ print('Should be low/negative if leg1 and leg2 are distinguishable')
 python scripts/explore_instruction_domain.py \
     --vae-checkpoint outputs/vae_aux/best_model.pt \
     --regressor-checkpoint outputs/feature_regressor_aux/best_model.pt \
-    --editor-checkpoint outputs/latent_editor_aux_ep20_lr2e4/checkpoint_epoch_11.pt \
+    --editor-checkpoint outputs/latent_editor_direction/best_model.pt \
     --num-brackets 50 \
-    --output outputs/exploration/full_study_251213.json
+    --output outputs/exploration/full_study_direction_251216.json
 ```
 
 ```bash
@@ -267,3 +267,8 @@ rm -rf ~/.cache/huggingface/
 # Now container disk drops from 83% to ~10-15%
 ```
 
+```bash
+export TOKENIZERS_PARALLELISM=false
+# OR
+TOKENIZERS_PARALLELISM=false python your_script.py
+```
