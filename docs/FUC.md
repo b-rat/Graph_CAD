@@ -272,3 +272,7 @@ export TOKENIZERS_PARALLELISM=false
 # OR
 TOKENIZERS_PARALLELISM=false python your_script.py
 ```
+
+```bash
+python scripts/analyze_vae_asymmetry.py --n-samples 200 --output outputs/vae_asymmetry.json
+```
