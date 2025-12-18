@@ -642,6 +642,37 @@ Analysis of 2000 trials revealed the model learned a **fixed edit magnitude prio
 
 **Analysis script:** `scripts/analyze_magnitude_spread.py`
 
+### Boundary Analysis (Dec 2025)
+
+Investigated whether failures occur because parameters near boundaries can't increase/decrease further.
+
+**Hypothesis:** Failures happen when (high value + increase) or (low value + decrease) — geometric limits.
+
+**Results:**
+
+| Category | Failures | % of all failures |
+|----------|----------|-------------------|
+| Boundary-related | 89 | 22.5% |
+| **Non-boundary** | **306** | **77.5%** |
+
+**Failure rate by parameter region:**
+
+| Region | Increase | Decrease |
+|--------|----------|----------|
+| Low (0-25%) | 33.3% | 1.9% |
+| Mid-low (25-50%) | 37.1% | 1.7% |
+| Mid-high (50-75%) | 40.9% | 1.1% |
+| High (75-100%) | 41.7% | 0.0% |
+
+**Key finding:** Increase fails at 35-42% **across all regions**, not just at boundaries. 97.4% of non-boundary failures are increase operations.
+
+**Conclusion:** The asymmetry is NOT geometric constraints. The model fails at increase *everywhere*, suggesting:
+1. VAE latent space makes "increase" directions harder to navigate
+2. LLM learned that decrease is "safer" and defaults to it when uncertain
+3. Training dynamics favor decrease convergence
+
+Symmetric normalization alone won't fix this — the fix needs to address how the LLM learns increase vs decrease directions.
+
 ### Open Questions for Generalization
 
 | Question | Priority | Notes |
