@@ -81,48 +81,42 @@ def generate_test_brackets(
     pmin, pmax = PARAM_RANGES[param]
     triplets = []
     attempts = 0
-    max_attempts = n_samples * 20  # Try more times to get enough samples
+    max_attempts = n_samples * 50  # Try many times to get enough samples
 
     while len(triplets) < n_samples and attempts < max_attempts:
         attempts += 1
 
-        # Generate a base bracket where we can both increase and decrease
-        # Ensure the base value allows room for both directions
-        base_min = pmin + magnitude + 1  # Extra margin
-        base_max = pmax - magnitude - 1
-
-        if base_min >= base_max:
-            break
-
-        # Random base bracket with safe middle-range values
-        params = {
-            'leg1_length': rng.uniform(80, 170),
-            'leg2_length': rng.uniform(80, 170),
-            'width': rng.uniform(28, 52),
-            'thickness': rng.uniform(5, 10),
-            'hole1_diameter': rng.uniform(5, 10),
-            'hole2_diameter': rng.uniform(5, 10),
-        }
-
-        # Ensure the target param is in the valid range
-        params[param] = rng.uniform(base_min, base_max)
-
         try:
-            base_bracket = LBracket(**params)
+            # Generate a random valid bracket
+            base_bracket = LBracket.random(rng)
+
+            # Check if the target param has room for both increase and decrease
+            base_value = getattr(base_bracket, param)
+
+            if base_value - magnitude < pmin + 1:
+                continue  # Not enough room to decrease
+            if base_value + magnitude > pmax - 1:
+                continue  # Not enough room to increase
+
             # Try to build to verify it's valid
             base_bracket.build()
 
-            # Create decreased version
-            dec_params = params.copy()
-            dec_params[param] = params[param] - magnitude
-            dec_bracket = LBracket(**dec_params)
+            # Create decreased version using with_modified (handles constraints)
+            dec_bracket = base_bracket.with_modified(param, -magnitude, clamp=False)
             dec_bracket.build()
 
             # Create increased version
-            inc_params = params.copy()
-            inc_params[param] = params[param] + magnitude
-            inc_bracket = LBracket(**inc_params)
+            inc_bracket = base_bracket.with_modified(param, magnitude, clamp=False)
             inc_bracket.build()
+
+            # Verify the changes actually happened (not clamped)
+            dec_value = getattr(dec_bracket, param)
+            inc_value = getattr(inc_bracket, param)
+
+            if abs((base_value - dec_value) - magnitude) > 0.1:
+                continue  # Decrease was clamped
+            if abs((inc_value - base_value) - magnitude) > 0.1:
+                continue  # Increase was clamped
 
             triplets.append({
                 'base': base_bracket,
@@ -130,7 +124,7 @@ def generate_test_brackets(
                 'increased': inc_bracket,
                 'param': param,
                 'magnitude': magnitude,
-                'base_value': params[param],
+                'base_value': base_value,
             })
         except Exception as e:
             continue
