@@ -60,7 +60,7 @@ def load_vae(checkpoint_path: str, device: str):
 def encode_bracket(vae, bracket: LBracket, device: str) -> np.ndarray:
     """Encode a bracket to latent space."""
     # Build the solid and extract graph
-    solid = bracket.build()
+    solid = bracket.to_solid()
     graph = extract_graph_from_solid(solid)
     graph = graph.to(device)
 
@@ -99,15 +99,15 @@ def generate_test_brackets(
                 continue  # Not enough room to increase
 
             # Try to build to verify it's valid
-            base_bracket.build()
+            base_bracket.to_solid()
 
             # Create decreased version using with_modified (handles constraints)
             dec_bracket = base_bracket.with_modified(param, -magnitude, clamp=False)
-            dec_bracket.build()
+            dec_bracket.to_solid()
 
             # Create increased version
             inc_bracket = base_bracket.with_modified(param, magnitude, clamp=False)
-            inc_bracket.build()
+            inc_bracket.to_solid()
 
             # Verify the changes actually happened (not clamped)
             dec_value = getattr(dec_bracket, param)
