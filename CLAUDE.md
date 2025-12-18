@@ -606,15 +606,51 @@ The core hypothesis was validated:
 3. **LLM latent editing works**: Mistral 7B learns to produce meaningful delta vectors
 4. **Direction classification works**: Auxiliary BCE head breaks shortcut learning
 
+### Magnitude Analysis (Dec 2025)
+
+Analysis of 2000 trials revealed the model learned a **fixed edit magnitude prior** rather than scaling to instruction size.
+
+**Overall statistics:**
+
+| Metric | Value |
+|--------|-------|
+| Mean instruction magnitude | 13.4mm |
+| Mean target param change | 7.0mm (52% of instruction) |
+| Mean sum of all \|changes\| | 18.7mm |
+| Mean spillover to other params | 11.8mm |
+
+**Scaling behavior by instruction magnitude:**
+
+| Instruction | Target % | Sum % | Behavior |
+|-------------|----------|-------|----------|
+| 1-3mm (holes/thickness) | 37-44% | 600-800% | Small edits amplified |
+| 10-20mm (width/legs) | 33-53% | 73-124% | Moderate match |
+| 30-50mm (legs) | 55-68% | 90-114% | Sum ≈ instruction ✓ |
+
+**Key insight:** The model produces ~15-20mm total change regardless of instruction:
+- Small requests (1-3mm) get **amplified** to ~8-18mm total
+- Large requests (50mm) get **compressed** to ~45mm total
+
+**By direction:**
+
+| Direction | Accuracy | Avg Target Change | Avg Sum Change |
+|-----------|----------|-------------------|----------------|
+| Decrease | 98.8% | 8.7mm | 23.2mm |
+| Increase | 61.7% | 5.2mm | 14.3mm |
+
+**Root cause:** Model learned a "typical edit size" prior during training rather than precisely following instruction magnitudes. This is a learned bias issue, not purely latent space entanglement.
+
+**Analysis script:** `scripts/analyze_magnitude_spread.py`
+
 ### Open Questions for Generalization
 
 | Question | Priority | Notes |
 |----------|----------|-------|
-| Magnitude calibration | High | 20mm → 5mm scaling needs investigation |
-| Increase asymmetry | Medium | Why is decrease 96-100% but increase 37-95%? |
+| Magnitude scaling | High | Model compresses large edits, amplifies small ones |
+| Increase asymmetry | Medium | Decrease produces 2x larger changes than increase |
 | Failure analysis | Medium | What causes the 20% errors? |
 | Instruction robustness | Medium | Varied phrasings, compound instructions |
-| Leg disentanglement | Low | -0.46 correlation may be acceptable |
+| Spillover reduction | Medium | 11.8mm average leaks to non-target params |
 
 ### Recommended Next Steps
 
