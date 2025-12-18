@@ -80,24 +80,28 @@ def generate_test_brackets(
 
     pmin, pmax = PARAM_RANGES[param]
     triplets = []
+    attempts = 0
+    max_attempts = n_samples * 20  # Try more times to get enough samples
 
-    for _ in range(n_samples):
+    while len(triplets) < n_samples and attempts < max_attempts:
+        attempts += 1
+
         # Generate a base bracket where we can both increase and decrease
         # Ensure the base value allows room for both directions
-        base_min = pmin + magnitude
-        base_max = pmax - magnitude
+        base_min = pmin + magnitude + 1  # Extra margin
+        base_max = pmax - magnitude - 1
 
         if base_min >= base_max:
-            continue
+            break
 
-        # Random base bracket
+        # Random base bracket with safe middle-range values
         params = {
-            'leg1_length': rng.uniform(60, 190),
-            'leg2_length': rng.uniform(60, 190),
-            'width': rng.uniform(25, 55),
-            'thickness': rng.uniform(4, 11),
-            'hole1_diameter': rng.uniform(5, 11),
-            'hole2_diameter': rng.uniform(5, 11),
+            'leg1_length': rng.uniform(80, 170),
+            'leg2_length': rng.uniform(80, 170),
+            'width': rng.uniform(28, 52),
+            'thickness': rng.uniform(5, 10),
+            'hole1_diameter': rng.uniform(5, 10),
+            'hole2_diameter': rng.uniform(5, 10),
         }
 
         # Ensure the target param is in the valid range
@@ -105,16 +109,20 @@ def generate_test_brackets(
 
         try:
             base_bracket = LBracket(**params)
+            # Try to build to verify it's valid
+            base_bracket.build()
 
             # Create decreased version
             dec_params = params.copy()
             dec_params[param] = params[param] - magnitude
             dec_bracket = LBracket(**dec_params)
+            dec_bracket.build()
 
             # Create increased version
             inc_params = params.copy()
             inc_params[param] = params[param] + magnitude
             inc_bracket = LBracket(**inc_params)
+            inc_bracket.build()
 
             triplets.append({
                 'base': base_bracket,
@@ -124,7 +132,7 @@ def generate_test_brackets(
                 'magnitude': magnitude,
                 'base_value': params[param],
             })
-        except Exception:
+        except Exception as e:
             continue
 
     return triplets
@@ -252,8 +260,10 @@ def main():
             triplets = generate_test_brackets(param, magnitude, args.n_samples, rng)
 
             if len(triplets) < 10:
-                print(f"  {magnitude}mm: insufficient samples")
+                print(f"  {magnitude}mm: insufficient samples ({len(triplets)} generated)")
                 continue
+
+            print(f"  {magnitude}mm: generated {len(triplets)} triplets")
 
             results = analyze_deltas(vae, triplets, device)
             param_results[magnitude] = results
