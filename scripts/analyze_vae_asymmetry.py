@@ -57,15 +57,23 @@ def load_vae(checkpoint_path: str, device: str):
     return vae
 
 
+def graph_to_tensors(graph, device: str):
+    """Convert BRepGraph to PyTorch tensors."""
+    x = torch.tensor(graph.node_features, dtype=torch.float32, device=device)
+    edge_index = torch.tensor(graph.edge_index, dtype=torch.long, device=device)
+    edge_attr = torch.tensor(graph.edge_features, dtype=torch.float32, device=device)
+    return x, edge_index, edge_attr
+
+
 def encode_bracket(vae, bracket: LBracket, device: str) -> np.ndarray:
     """Encode a bracket to latent space."""
     # Build the solid and extract graph
     solid = bracket.to_solid()
     graph = extract_graph_from_solid(solid)
-    graph = graph.to(device)
+    x, edge_index, edge_attr = graph_to_tensors(graph, device)
 
     with torch.no_grad():
-        mu, _ = vae.encode(graph.x, graph.edge_index, graph.edge_attr)
+        mu, _ = vae.encode(x, edge_index, edge_attr)
 
     return mu.cpu().numpy().flatten()
 
