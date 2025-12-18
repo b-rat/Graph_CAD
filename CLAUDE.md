@@ -586,6 +586,59 @@ When extending beyond L-brackets:
 3. **leg1/leg2 entanglement**: These parameters remain hardest to edit independently
 4. **Boundary saturation**: Parameters near min/max show reduced edit effectiveness
 
+---
+
+## PoC Assessment (Dec 2025)
+
+### Verdict: SUCCESS
+
+The core hypothesis was validated:
+- LLMs CAN learn to edit CAD geometry in latent space
+- Natural language instructions CAN be translated to meaningful geometric changes
+- Full pipeline functional: STEP → Graph → Latent → Edit → Parameters → STEP
+
+**80.2% direction accuracy** on a fixed-topology part family demonstrates the approach is viable. The remaining limitations are engineering problems, not fundamental blockers.
+
+### What Was Proven
+
+1. **Graph representation works**: Face-adjacency graphs capture sufficient geometric information
+2. **VAE compression works**: 124D → 16D with full parameter recovery
+3. **LLM latent editing works**: Mistral 7B learns to produce meaningful delta vectors
+4. **Direction classification works**: Auxiliary BCE head breaks shortcut learning
+
+### Open Questions for Generalization
+
+| Question | Priority | Notes |
+|----------|----------|-------|
+| Magnitude calibration | High | 20mm → 5mm scaling needs investigation |
+| Increase asymmetry | Medium | Why is decrease 96-100% but increase 37-95%? |
+| Failure analysis | Medium | What causes the 20% errors? |
+| Instruction robustness | Medium | Varied phrasings, compound instructions |
+| Leg disentanglement | Low | -0.46 correlation may be acceptable |
+
+### Recommended Next Steps
+
+**Before generalizing to variable topology:**
+
+1. **Magnitude calibration** — Quick win, high impact
+   - Analyze delta magnitudes vs parameter changes
+   - Consider magnitude prediction head or inference-time scaling
+
+2. **Failure analysis** — Understand the 20%
+   - Cluster failed samples by bracket region, instruction type
+   - Identify systematic vs random failures
+
+3. **Instruction robustness** — Needed for real use
+   - Test synonyms: "extend", "lengthen", "grow" vs "make longer"
+   - Test compound: "make leg1 longer and hole2 smaller"
+
+**For generalization:**
+
+1. **Variable topology**: GNN encoder with attention pooling → fixed latent
+2. **Multiple part families**: Mixed dataset training
+3. **Richer features**: Fillets, chamfers, curved surfaces
+4. **Multi-step edits**: Sequential instruction handling
+
 ## Technical Stack
 
 - **ML Framework**: PyTorch
