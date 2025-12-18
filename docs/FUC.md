@@ -227,9 +227,9 @@ print('Should be low/negative if leg1 and leg2 are distinguishable')
 python scripts/explore_instruction_domain.py \
     --vae-checkpoint outputs/vae_aux/best_model.pt \
     --regressor-checkpoint outputs/feature_regressor_aux/best_model.pt \
-    --editor-checkpoint outputs/latent_editor_direction/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_contrastive_w0.1/best_model.pt \
     --num-brackets 50 \
-    --output outputs/exploration/full_study_direction_251216.json
+    --output outputs/exploration/full_study_contrastive_251217.json
 ```
 
 ```bash

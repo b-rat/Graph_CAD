@@ -1077,3 +1077,45 @@ INFERENCE COMPLETE
   hole1_diameter             7.08       7.98      +0.90
   hole2_distance           132.55     138.22      +5.67
   hole2_diameter             9.63      10.45      +0.82
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make hole1 distance 10mm longer"
+  Delta magnitude: 0.0567
+  Graph change: node_MSE=0.000000, edge_MSE=0.000000
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              143.47     143.98      +0.51
+  leg2_length              156.43     157.06      +0.63
+  width                     53.66      53.63      -0.03
+  thickness                  4.56       4.57      +0.01
+  hole1_distance            29.08      29.66      +0.58
+  hole1_diameter             5.86       5.99      +0.13
+  hole2_distance            35.70      34.73      -0.98
+  hole2_diameter             6.37       6.31      -0.06
+
+============================================================
+INFERENCE COMPLETE
+============================================================
+  Input: random L-bracket
+  Instruction: "make hole1 distance 20mm longer"
+  Delta magnitude: 0.0783
+  Graph change: node_MSE=0.000003, edge_MSE=0.000008
+
+  Parameter Changes:
+  --------------------------------------------------
+  Parameter              Original     Edited          _
+  --------------------------------------------------
+  leg1_length              161.73     163.25      +1.52
+  leg2_length              116.67     116.46      -0.21
+  width                     27.20      26.82      -0.38
+  thickness                 10.44      10.40      -0.03
+  hole1_distance           123.29     126.16      +2.86
+  hole1_diameter             7.77       7.83      +0.06
+  hole2_distance            61.20      59.69      -1.51
+  hole2_diameter             7.11       7.00      -0.11
