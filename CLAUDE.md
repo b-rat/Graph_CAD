@@ -411,31 +411,40 @@ python scripts/train_latent_editor.py \
 
 ---
 
-### Parallel Testing Plan
+### Parallel Testing Results (Dec 2025)
 
-Both approaches run simultaneously on separate RunPods:
-- **Pod 1**: Contrastive learning with `--contrastive-weight 0.1` (lowered from 0.5 after divergence)
-- **Pod 2**: Direction classifier with `--direction-weight 0.5`
+Both approaches trained for 20 epochs on separate RunPods.
 
-**Comparison Criteria:**
-| Metric | Contrastive | Direction Classifier |
-|--------|-------------|---------------------|
-| Training speed | Slower (2 fwd passes) | Faster (1 fwd pass) |
-| Data requirement | Paired samples | Standard samples |
-| Primary signal | CosSim → -1.0 | Dir Accuracy → 90%+ |
-| Stability | Sensitive to weight | Stable |
+**Head-to-Head Comparison:**
 
-**Hyperparameter Findings:**
-| Approach | Weight | Result |
-|----------|--------|--------|
-| Contrastive | 0.5 | ❌ Diverged (CosSim → 0) |
-| Contrastive | 0.1 | 🔄 Testing |
-| Direction | 0.5 | ✓ Stable (68% acc @ epoch 3) |
+| Metric | Direction Classifier | Contrastive (w=0.1) |
+|--------|---------------------|---------------------|
+| **Overall Accuracy** | **80.2%** ✓ | 64.5% |
+| Final Delta MSE | 0.0058 | 0.0059 |
+| Final CosSim | N/A | -0.537 ✓ |
+| Training Speed | Faster (1 fwd pass) | Slower (2 fwd passes) |
 
-**Next Steps:**
-1. Complete both training runs (20 epochs each)
-2. Evaluate end-to-end direction accuracy on held-out test set
-3. Select better approach or combine (direction classifier may bootstrap, then fine-tune with contrastive)
+**End-to-End by Parameter:**
+
+| Parameter | Direction | Contrastive | Winner |
+|-----------|-----------|-------------|--------|
+| leg1_length | 69.8% | 58.0% | Direction |
+| leg2_length | 67.0% | 50.2% | Direction |
+| width | 88.7% | 65.3% | Direction |
+| thickness | 97.3% | 93.3% | Direction |
+| hole1_diameter | 81.3% | 67.3% | Direction |
+| hole2_diameter | 85.3% | 59.3% | Direction |
+
+**Asymmetry Analysis:**
+
+| Approach | Increase Accuracy | Decrease Accuracy |
+|----------|-------------------|-------------------|
+| Direction | 37-95% | 96-100% |
+| Contrastive | 51-87% | 25-99% |
+
+**Key Finding:** Contrastive achieved opposite deltas (CosSim = -0.537) but this didn't translate to better end-to-end accuracy. The explicit BCE classification signal in the direction classifier provides a stronger learning signal than the contrastive similarity objective.
+
+**Conclusion:** Direction classifier is the recommended approach for this problem.
 
 ---
 
@@ -443,8 +452,12 @@ Both approaches run simultaneously on separate RunPods:
 
 **Current best checkpoints:**
 - `outputs/vae_aux/best_model.pt` — VAE with auxiliary parameter loss (16D, β=0.01)
-- `outputs/latent_editor_aux_ep20_lr1e4/best_model.pt` — LLM Latent Editor (aux-VAE, pre-contrastive)
-- `outputs/feature_regressor/best_model.pt` — FeatureRegressor
+- `outputs/latent_editor_direction/best_model.pt` — LLM Latent Editor with direction classifier (80.2% accuracy)
+- `outputs/feature_regressor_aux/best_model.pt` — FeatureRegressor
+
+**Alternative/experimental checkpoints:**
+- `outputs/latent_editor_contrastive_w0.1/best_model.pt` — Contrastive learning approach (64.5% accuracy)
+- `outputs/latent_editor_aux_ep20_lr1e4/best_model.pt` — Pre-direction classifier baseline
 
 **Legacy checkpoints:**
 - `outputs/vae_16d_lowbeta/best_model.pt` — Original VAE (collapsed latent space)
