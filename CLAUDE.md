@@ -673,6 +673,49 @@ Investigated whether failures occur because parameters near boundaries can't inc
 
 Symmetric normalization alone won't fix this — the fix needs to address how the LLM learns increase vs decrease directions.
 
+### VAE Latent Space Symmetry Analysis (Dec 2025)
+
+Investigated whether the VAE encodes increase/decrease directions asymmetrically — could the VAE structure explain the increase bias?
+
+**Method:** For each parameter and magnitude, generated 200 triplets (base, decreased, increased) and measured latent deltas.
+
+**Results:**
+
+| Metric | Finding | Implication |
+|--------|---------|-------------|
+| **Inc/Dec Cosine** | -0.86 to -0.99 | Near-perfect opposites |
+| **Variance Ratio** | Decrease ~10-20% higher | Opposite of expected |
+| **Alignment** | 0.87-0.99 for both | Equally consistent |
+| **Magnitude** | Decrease ~10-20% larger deltas | Dec direction more pronounced |
+
+**By parameter (50mm edits for legs, max magnitude for others):**
+
+| Parameter | Inc/Dec Cosine | Var Ratio (dec/inc) | Dec Magnitude | Inc Magnitude |
+|-----------|----------------|---------------------|---------------|---------------|
+| leg1_length | -0.895 | 1.47 | 1.12 | 0.91 |
+| leg2_length | -0.865 | 1.15 | 1.05 | 0.89 |
+| width | -0.942 | 1.21 | 1.02 | 0.84 |
+| thickness | -0.946 | 1.00 | 0.77 | 0.70 |
+| hole1_diameter | -0.983 | 0.87 | 0.53 | 0.48 |
+| hole2_diameter | -0.979 | 1.44 | 0.48 | 0.36 |
+
+**Key findings:**
+
+1. **VAE is NOT asymmetric** — Inc/dec cosines near -1.0 mean increase and decrease are encoded as nearly perfect mirror directions in latent space.
+
+2. **Decrease has MORE variance** — This is the opposite of what we'd expect if variance caused poor increase performance. The model does BETTER on the direction with MORE variance.
+
+3. **Decrease produces larger latent deltas** — Decrease operations create ~10-20% larger movements in latent space, which may make them easier to learn.
+
+**Conclusion:** The VAE latent space structure is NOT the root cause of the increase/decrease asymmetry. The problem is in latent editor training dynamics:
+- MSE loss allows taking shortcuts
+- Training optimization finds "always decrease" shortcut first
+- Without explicit direction supervision, model doesn't recover
+
+The direction classifier fix worked because it forced explicit direction encoding, not because it fixed a VAE problem.
+
+**Analysis script:** `scripts/analyze_vae_asymmetry.py`
+
 ### Open Questions for Generalization
 
 | Question | Priority | Notes |
