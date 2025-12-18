@@ -756,3 +756,51 @@ The direction classifier fix worked because it forced explicit direction encodin
 - **CAD Kernel**: CadQuery
 - **LLM**: Mistral 7B (via transformers + peft)
 - **Quantization**: bitsandbytes (4-bit QLoRA)
+
+---
+
+## Next Step: Variable Topology (Phase 2)
+
+### PoC Conclusion
+
+The fixed-topology L-bracket PoC is **complete**. Key outcomes:
+
+- **80.2% direction accuracy** proves LLMs can edit CAD in latent space
+- **Direction classifier** solves the shortcut problem (transferable technique)
+- **Remaining issues** (magnitude scaling, increase asymmetry) are training dynamics problems with known causes — NOT fundamental blockers
+- **VAE latent space is symmetric** — no architectural changes needed there
+
+**Do NOT further optimize the current latent editor** — the VAE will change in the next phase, invalidating any fine-tuning.
+
+### What Changes for Variable Topology
+
+| Component | Current (Fixed) | Next (Variable) |
+|-----------|-----------------|-----------------|
+| **Topology** | Always 10 faces, 22 edges | Variable face/edge count |
+| **VAE Encoder** | Fixed-size input | GNN with attention pooling |
+| **VAE Decoder** | MLP → 124 features | Conditional generation or fixed output + mask |
+| **Latent Space** | 16D, parameter-aligned | Larger dim, topology-aware |
+| **Part Families** | L-brackets only | Multiple families or ABC dataset |
+
+### Transferable Learnings
+
+These techniques/insights apply to the next phase:
+
+1. **Direction classifier** — Use explicit BCE supervision to prevent shortcut learning
+2. **Auxiliary parameter loss** — Helps VAE encode meaningful information in latent space
+3. **Free-bits KL constraint** — Prevents posterior collapse
+4. **Analysis methodology** — Scripts for magnitude spread, boundary analysis, VAE symmetry
+
+### Recommended Approach
+
+1. **Start with VAE changes** — Variable topology encoder/decoder is the foundation
+2. **Keep latent editor architecture** — Mistral 7B + QLoRA + direction classifier
+3. **Regenerate training data** — New VAE means new latent space
+4. **Expect similar issues** — Shortcut learning will likely recur; direction classifier should fix it
+
+### Key Files to Reference
+
+- `scripts/analyze_vae_asymmetry.py` — VAE latent space analysis
+- `scripts/analyze_magnitude_spread.py` — Edit magnitude analysis
+- `graph_cad/training/edit_trainer.py` — Direction classifier implementation
+- `graph_cad/models/latent_editor.py` — DirectionClassifier architecture
