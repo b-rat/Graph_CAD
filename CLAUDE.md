@@ -804,3 +804,140 @@ These techniques/insights apply to the next phase:
 - `scripts/analyze_magnitude_spread.py` — Edit magnitude analysis
 - `graph_cad/training/edit_trainer.py` — Direction classifier implementation
 - `graph_cad/models/latent_editor.py` — DirectionClassifier architecture
+
+---
+
+## Implementation Plan: Variable Topology VAE (Option B)
+
+### Status: In Progress (Dec 2025)
+
+**Completed Phases:**
+- [x] Phase 1: L-Bracket generator with fillets and variable holes
+- [x] Phase 2: Graph extraction with curvature and face type separation
+- [x] Phase 3: VAE encoder with face type embeddings
+- [x] Phase 4: VAE decoder with masks and face type classification
+- [x] Phase 5: Variable topology loss functions
+
+**Remaining Phases:**
+- [ ] Phase 6: Variable topology dataset with padding
+- [ ] Phase 7: Training script updates
+
+### Overview
+
+Extend the VAE to handle **variable topology L-brackets** with embedded face types. This tests whether the latent space can encode topological variation (fillets, variable hole counts) while maintaining reconstruction quality.
+
+**Key changes:**
+1. L-bracket generator with optional fillets and 0-2 holes per leg
+2. Expanded face type vocabulary with learned embeddings
+3. Mask-based decoder for variable-size output
+4. Face type classification head in decoder
+
+### New Components
+
+#### VariableLBracket (`graph_cad/data/l_bracket.py`)
+
+```python
+# Topology variation: 6-15 faces
+VariableLBracket(
+    leg1_length, leg2_length, width, thickness,
+    fillet_radius=0.0,          # 0 = no fillet
+    hole1_diameters=(6, 8),     # Tuple of hole sizes
+    hole1_distances=(20, 60),   # Corresponding distances
+    hole2_diameters=(6,),       # Can have different count
+    hole2_distances=(30,),
+)
+```
+
+#### Graph Extraction (`graph_cad/data/graph_extraction.py`)
+
+**Expanded face types:**
+| Code | Type | Geometry |
+|------|------|----------|
+| 0 | PLANAR | Flat faces |
+| 1 | CYLINDRICAL | Holes |
+| 2 | TORUS | Fillets |
+| 3 | CONE | Chamfers |
+| 4 | SPHERE | Ball ends |
+| 5-7 | Other | B-spline, etc. |
+
+**Variable topology features:**
+- `extract_graph_from_solid_variable()` — Returns 9D node features + face_types array
+- Node features: [area, dir_xyz, centroid_xyz, curvature1, curvature2]
+- Face types: Separate integer array for embedding lookup
+
+#### VariableGraphVAE (`graph_cad/models/graph_vae.py`)
+
+```python
+config = VariableGraphVAEConfig(
+    node_features=9,      # Continuous features (no face_type)
+    num_face_types=8,     # Embedding vocabulary
+    face_embed_dim=8,     # Embedding dimension
+    max_nodes=20,         # For padding
+    max_edges=50,
+    latent_dim=32,        # Larger than fixed topology
+)
+
+# Encoder: GNN with face type embeddings
+# Decoder outputs:
+#   - node_features: (batch, max_nodes, 9)
+#   - edge_features: (batch, max_edges, 2)
+#   - node_mask_logits: (batch, max_nodes)
+#   - edge_mask_logits: (batch, max_edges)
+#   - face_type_logits: (batch, max_nodes, 8)
+```
+
+#### Loss Functions (`graph_cad/models/losses.py`)
+
+```python
+variable_vae_loss(outputs, targets, beta=0.01, free_bits=2.0)
+# Components:
+#   1. Masked reconstruction loss (only on real nodes/edges)
+#   2. KL divergence
+#   3. Node/edge existence BCE
+#   4. Face type cross-entropy
+```
+
+### Training Commands (Variable Topology)
+
+```bash
+# Train variable topology VAE
+python scripts/train_vae.py \
+    --variable-topology \
+    --epochs 100 \
+    --latent-dim 32 \
+    --target-beta 0.01 \
+    --mask-weight 1.0 \
+    --face-type-weight 0.5 \
+    --max-nodes 20 \
+    --max-edges 50 \
+    --output-dir outputs/vae_variable
+```
+
+### Success Criteria
+
+| Metric | Target | Notes |
+|--------|--------|-------|
+| Node MSE (masked) | < 0.002 | Reconstruction on existing nodes |
+| Node mask accuracy | > 95% | Predict which nodes exist |
+| Edge mask accuracy | > 95% | Predict which edges exist |
+| Face type accuracy | > 90% | Classification |
+| Latent clustering | Visible | Similar topologies cluster |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `graph_cad/data/l_bracket.py` | Added `VariableLBracket`, `VariableLBracketRanges` |
+| `graph_cad/data/graph_extraction.py` | Added curvature extraction, expanded face types, `extract_graph_from_solid_variable()` |
+| `graph_cad/models/graph_vae.py` | Added `VariableGraphVAEConfig`, `VariableGraphVAEEncoder`, `VariableGraphVAEDecoder`, `VariableGraphVAE` |
+| `graph_cad/models/losses.py` | Added `VariableVAELossConfig`, `variable_vae_loss()`, mask/face_type losses |
+
+### Files to Create (Phases 6-7)
+
+| File | Purpose |
+|------|---------|
+| `graph_cad/data/variable_dataset.py` | Dataset with padding/masking |
+| `scripts/train_variable_vae.py` | Training script |
+| `scripts/validate_variable_topology.py` | Reconstruction analysis |
+| `tests/unit/test_variable_lbracket.py` | Generator tests |
+| `tests/unit/test_variable_vae.py` | VAE tests |
