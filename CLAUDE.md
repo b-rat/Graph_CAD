@@ -847,6 +847,13 @@ VariableLBracket(
 )
 ```
 
+**Geometry constraints:**
+- Holes must be ≥ 1 diameter from leg end
+- Holes must be ≥ 1 diameter from corner (thickness boundary)
+- **Fillet-hole clearance**: When fillet is present, holes must maintain 2mm minimum wall from fillet edge
+  - Validation: `hole_edge_to_corner ≥ fillet_radius + 2mm`
+  - The `random()` method automatically respects this constraint
+
 #### Graph Extraction (`graph_cad/data/graph_extraction.py`)
 
 **Expanded face types:**
@@ -937,13 +944,13 @@ python scripts/train_vae.py \
 
 | Test File | Coverage | Tests |
 |-----------|----------|-------|
-| `tests/unit/test_l_bracket.py` | VariableLBracket | 26 tests (validation, properties, serialization, geometry) |
+| `tests/unit/test_l_bracket.py` | VariableLBracket | 28 tests (validation incl. fillet-hole clearance, properties, serialization, geometry) |
 | `tests/unit/test_graph_extraction.py` | Variable extraction | 16 tests (face count, curvature, face types) |
 | `tests/unit/test_graph_vae.py` | VariableGraphVAE | 20 tests (encoder, decoder, gradient flow) |
 | `tests/unit/test_losses.py` | Variable losses | 11 tests (reconstruction, masks, face type) |
 | `tests/unit/test_dataset.py` | VariableLBracketDataset | 18 tests (padding, masks, data loaders) |
 
-**Total: 218 tests passing** (93 new tests for variable topology)
+**Total: 220 tests passing** (95 new tests for variable topology)
 
 ### Ready for Training
 
