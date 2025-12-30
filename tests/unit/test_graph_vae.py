@@ -431,7 +431,7 @@ class TestVariableGraphVAEConfig:
         config = VariableGraphVAEConfig()
         assert config.node_features == 9
         assert config.edge_features == 2
-        assert config.num_face_types == 8
+        assert config.num_face_types == 3  # PLANAR, HOLE, FILLET
         assert config.face_embed_dim == 8
         assert config.max_nodes == 20
         assert config.max_edges == 50

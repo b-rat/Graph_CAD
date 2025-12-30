@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import math
+
 import numpy as np
 
 if TYPE_CHECKING:
@@ -31,8 +33,6 @@ from OCP.GeomAbs import (
     GeomAbs_Torus,
     GeomAbs_Cone,
     GeomAbs_Sphere,
-    GeomAbs_BSplineSurface,
-    GeomAbs_BezierSurface,
 )
 from OCP.GProp import GProp_GProps
 from OCP.TopAbs import TopAbs_FACE
@@ -40,17 +40,13 @@ from OCP.TopExp import TopExp_Explorer
 from OCP.TopoDS import TopoDS, TopoDS_Face
 
 
-# Face type codes (expanded vocabulary for variable topology)
-FACE_TYPE_PLANAR = 0
-FACE_TYPE_CYLINDRICAL = 1  # Holes, straight-edge fillets (quarter-cylinders)
-FACE_TYPE_TORUS = 2        # Curved-edge fillets only
-FACE_TYPE_CONE = 3         # Chamfers, tapered holes
-FACE_TYPE_SPHERE = 4       # Ball ends
-FACE_TYPE_BSPLINE = 5      # Freeform surfaces
-FACE_TYPE_BEZIER = 6       # Bezier surfaces
-FACE_TYPE_OTHER = 7        # Catch-all for unknown types
+# Face type codes (minimal vocabulary for current L-bracket dataset)
+# See CLAUDE.md for documentation on the 180° arc threshold decision
+FACE_TYPE_PLANAR = 0  # Flat faces
+FACE_TYPE_HOLE = 1    # Cylindrical faces with arc >= 180° (full/near-full cylinders)
+FACE_TYPE_FILLET = 2  # Cylindrical faces with arc < 180°, or torus surfaces
 
-NUM_FACE_TYPES = 8  # Total vocabulary size for embeddings
+NUM_FACE_TYPES = 3  # Minimal vocabulary - all embeddings will receive gradients
 
 
 @dataclass
@@ -221,24 +217,43 @@ def extract_graph_from_solid(solid: cq.Workplane) -> BRepGraph:
     )
 
 
-def _get_face_type_code(surface_type) -> int:
-    """Map OCC surface type to face type code."""
+def _get_face_type_code(adaptor: BRepAdaptor_Surface) -> int:
+    """
+    Map OCC surface to face type code.
+
+    Uses a 180° arc threshold to distinguish holes (full/near-full cylinders)
+    from fillets (partial cylinders). See CLAUDE.md for rationale.
+
+    Args:
+        adaptor: BRepAdaptor_Surface for the face.
+
+    Returns:
+        Face type code (0=PLANAR, 1=HOLE, 2=FILLET).
+    """
+    surface_type = adaptor.GetType()
+
     if surface_type == GeomAbs_Plane:
         return FACE_TYPE_PLANAR
     elif surface_type == GeomAbs_Cylinder:
-        return FACE_TYPE_CYLINDRICAL
+        # Distinguish holes from fillets by arc extent
+        # Holes: full cylinders (360°), arc >= 180°
+        # Fillets: partial cylinders (typically 90° for straight edges), arc < 180°
+        u_min = adaptor.FirstUParameter()
+        u_max = adaptor.LastUParameter()
+        arc_extent = u_max - u_min  # radians
+
+        if arc_extent >= math.pi:  # >= 180°
+            return FACE_TYPE_HOLE
+        else:
+            return FACE_TYPE_FILLET
     elif surface_type == GeomAbs_Torus:
-        return FACE_TYPE_TORUS
-    elif surface_type == GeomAbs_Cone:
-        return FACE_TYPE_CONE
-    elif surface_type == GeomAbs_Sphere:
-        return FACE_TYPE_SPHERE
-    elif surface_type == GeomAbs_BSplineSurface:
-        return FACE_TYPE_BSPLINE
-    elif surface_type == GeomAbs_BezierSurface:
-        return FACE_TYPE_BEZIER
+        # Torus surfaces are curved-edge fillets
+        return FACE_TYPE_FILLET
     else:
-        return FACE_TYPE_OTHER
+        # All other surface types (cone, sphere, bspline, etc.)
+        # Default to FILLET as it's the catch-all for non-planar, non-hole faces
+        # This keeps the vocabulary minimal while handling unexpected geometry
+        return FACE_TYPE_FILLET
 
 
 def _extract_curvature(
@@ -286,11 +301,11 @@ def _extract_face_features(
         For cylindrical faces, normal_or_axis is the cylinder axis direction.
         curvatures is (min_curvature, max_curvature).
     """
-    # Get surface type
+    # Get surface adaptor and face type
     adaptor = BRepAdaptor_Surface(face)
     surface_type = adaptor.GetType()
 
-    face_type = _get_face_type_code(surface_type)
+    face_type = _get_face_type_code(adaptor)
 
     # Compute area
     props = GProp_GProps()

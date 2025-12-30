@@ -856,17 +856,39 @@ VariableLBracket(
 
 #### Graph Extraction (`graph_cad/data/graph_extraction.py`)
 
-**Expanded face types:**
-| Code | Type | Geometry |
-|------|------|----------|
-| 0 | PLANAR | Flat faces |
-| 1 | CYLINDRICAL | Holes, **straight-edge fillets** |
-| 2 | TORUS | Curved-edge fillets only |
-| 3 | CONE | Chamfers, tapered holes |
-| 4 | SPHERE | Ball ends |
-| 5-7 | Other | B-spline, etc. |
+**Face types (minimal vocabulary):**
+| Code | Type | Detection | Examples |
+|------|------|-----------|----------|
+| 0 | PLANAR | `GeomAbs_Plane` | Bracket faces |
+| 1 | HOLE | Cylinder with arc ≥ 180° | Through-holes |
+| 2 | FILLET | Cylinder with arc < 180°, or torus | Fillets, chamfers, other curved |
 
-**Note on fillets:** A fillet on a straight edge (like L-bracket inner corner) creates a **cylindrical** surface (quarter-cylinder). Only fillets on curved edges produce torus surfaces.
+**Design Decision: 180° Arc Threshold**
+
+Holes and fillets are both cylindrical surfaces in OCC, but serve different functions. We distinguish them by arc extent:
+- **Holes**: Full cylinders (360° arc) — detected as arc ≥ 180°
+- **Fillets**: Partial cylinders (90° arc for straight edges) — detected as arc < 180°
+
+| Surface | Typical Arc | Classification |
+|---------|-------------|----------------|
+| Through-hole | 360° | HOLE |
+| Straight-edge fillet | 90° | FILLET |
+| Curved-edge fillet | varies | FILLET (torus) |
+
+**Why 180°?**
+- Current L-bracket data shows clear separation: holes=360°, fillets=90°, gap=270°
+- Simple threshold avoids floating-point precision issues
+- Works across CAD kernels (not OCC-specific logic)
+
+**Known limitations (future edge cases):**
+- Half-cylinders (180° exactly) — currently classified as HOLE
+- Partial holes (counterbores, blind holes with radius) — may misclassify
+- Chamfers on curved edges — will classify as FILLET (correct intent)
+
+**Why only 3 types?**
+- All embeddings receive meaningful gradients during training
+- Unused embeddings (cone, sphere, bspline) would get noisy updates
+- Expand vocabulary only when training data includes those geometries
 
 **Variable topology features:**
 - `extract_graph_from_solid_variable()` — Returns 9D node features + face_types array
@@ -878,7 +900,7 @@ VariableLBracket(
 ```python
 config = VariableGraphVAEConfig(
     node_features=9,      # Continuous features (no face_type)
-    num_face_types=8,     # Embedding vocabulary
+    num_face_types=3,     # PLANAR, HOLE, FILLET
     face_embed_dim=8,     # Embedding dimension
     max_nodes=20,         # For padding
     max_edges=50,
