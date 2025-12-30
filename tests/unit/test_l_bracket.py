@@ -394,6 +394,39 @@ class TestVariableLBracketValidation:
                 fillet_radius=50.0,  # Too large
             )
 
+    def test_hole_interferes_with_fillet_raises(self):
+        """Hole too close to fillet should raise ValueError."""
+        # Fillet radius 8mm + 2mm wall = 10mm clearance needed from corner
+        # Hole at distance 87mm from end of leg1 (100mm) puts hole center at X=13
+        # Hole edge closest to corner at X = 13 - 4 = 9mm
+        # Corner at X = thickness = 10mm, fillet extends to X = 18mm
+        # So hole edge at X=9 is inside fillet zone -> should fail
+        with pytest.raises(ValueError, match="accounting for fillet"):
+            VariableLBracket(
+                leg1_length=100,
+                leg2_length=80,
+                width=30,
+                thickness=10,
+                fillet_radius=8.0,
+                hole1_diameters=(8,),
+                hole1_distances=(87,),  # Too close to fillet
+            )
+
+    def test_hole_with_fillet_clearance_ok(self):
+        """Hole with sufficient fillet clearance should succeed."""
+        # Same setup but with hole further from corner
+        bracket = VariableLBracket(
+            leg1_length=100,
+            leg2_length=80,
+            width=30,
+            thickness=10,
+            fillet_radius=8.0,
+            hole1_diameters=(8,),
+            hole1_distances=(20,),  # Far enough from fillet
+        )
+        assert bracket.fillet_radius == 8.0
+        assert bracket.num_holes_leg1 == 1
+
 
 class TestVariableLBracketProperties:
     """Test VariableLBracket computed properties."""

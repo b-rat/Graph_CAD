@@ -562,6 +562,9 @@ class VariableLBracket:
                 f"hole2_distances ({len(self.hole2_distances)}) must have same length"
             )
 
+        # Minimum wall thickness between fillet and hole edge
+        min_fillet_hole_wall = 2.0  # mm
+
         # Validate each hole in leg 1
         for i, (diam, dist) in enumerate(zip(self.hole1_diameters, self.hole1_distances)):
             if diam <= 0:
@@ -572,11 +575,22 @@ class VariableLBracket:
                 errors.append(
                     f"hole1[{i}] distance ({dist}) must be >= diameter ({diam})"
                 )
-            max_dist = self.leg1_length - self.thickness - diam
+            # Max distance accounts for fillet if present
+            # Hole center at X = leg1_length - dist
+            # Hole edge closest to corner at X = leg1_length - dist - diam/2
+            # Must be >= thickness + fillet_radius + min_wall
+            fillet_clearance = self.fillet_radius + min_fillet_hole_wall if self.fillet_radius > 0 else 0
+            max_dist = self.leg1_length - self.thickness - diam / 2 - fillet_clearance
             if dist > max_dist:
-                errors.append(
-                    f"hole1[{i}] distance ({dist}) must be <= {max_dist:.2f}"
-                )
+                if self.fillet_radius > 0:
+                    errors.append(
+                        f"hole1[{i}] distance ({dist:.2f}) must be <= {max_dist:.2f} "
+                        f"(accounting for fillet_radius={self.fillet_radius:.1f} + {min_fillet_hole_wall}mm wall)"
+                    )
+                else:
+                    errors.append(
+                        f"hole1[{i}] distance ({dist}) must be <= {max_dist:.2f}"
+                    )
             if self.width < 2 * diam:
                 errors.append(
                     f"width ({self.width}) must be >= 2 × hole1[{i}] diameter ({2*diam})"
@@ -592,11 +606,19 @@ class VariableLBracket:
                 errors.append(
                     f"hole2[{i}] distance ({dist}) must be >= diameter ({diam})"
                 )
-            max_dist = self.leg2_length - self.thickness - diam
+            # Max distance accounts for fillet if present
+            fillet_clearance = self.fillet_radius + min_fillet_hole_wall if self.fillet_radius > 0 else 0
+            max_dist = self.leg2_length - self.thickness - diam / 2 - fillet_clearance
             if dist > max_dist:
-                errors.append(
-                    f"hole2[{i}] distance ({dist}) must be <= {max_dist:.2f}"
-                )
+                if self.fillet_radius > 0:
+                    errors.append(
+                        f"hole2[{i}] distance ({dist:.2f}) must be <= {max_dist:.2f} "
+                        f"(accounting for fillet_radius={self.fillet_radius:.1f} + {min_fillet_hole_wall}mm wall)"
+                    )
+                else:
+                    errors.append(
+                        f"hole2[{i}] distance ({dist}) must be <= {max_dist:.2f}"
+                    )
             if self.width < 2 * diam:
                 errors.append(
                     f"width ({self.width}) must be >= 2 × hole2[{i}] diameter ({2*diam})"
@@ -792,12 +814,16 @@ class VariableLBracket:
         num_holes_leg1 = rng.choice([0, 1, 2], p=prob_config)
         num_holes_leg2 = rng.choice([0, 1, 2], p=prob_config)
 
+        # Minimum wall thickness between fillet and hole edge
+        min_fillet_hole_wall = 2.0  # mm (must match _validate)
+
         # Generate holes for leg 1
         hole1_diameters = []
         hole1_distances = []
         if num_holes_leg1 > 0:
-            # Available length for holes
-            available_length = leg1_length - thickness
+            # Available length for holes (accounting for fillet clearance)
+            fillet_clearance = fillet_radius + min_fillet_hole_wall if fillet_radius > 0 else 0
+            available_length = leg1_length - thickness - fillet_clearance
 
             for _ in range(num_holes_leg1):
                 diam = rng.uniform(*ranges.hole_diameter)
@@ -809,7 +835,7 @@ class VariableLBracket:
             if num_holes_leg1 == 1:
                 diam = hole1_diameters[0]
                 min_dist = diam
-                max_dist = available_length - diam
+                max_dist = available_length - diam / 2  # Account for hole radius near corner
                 if max_dist > min_dist:
                     hole1_distances.append(rng.uniform(min_dist, max_dist))
                 else:
@@ -818,13 +844,13 @@ class VariableLBracket:
                 # Two holes - ensure they don't overlap
                 d1, d2 = hole1_diameters
                 min_spacing = (d1 + d2) / 2 + 3  # 3mm min wall
-                total_space = available_length - d1 - d2
+                total_space = available_length - d1 / 2 - d2 / 2  # Account for hole radii
 
                 if total_space > min_spacing:
                     # First hole near end
                     dist1 = rng.uniform(d1, d1 + (total_space - min_spacing) / 2)
-                    # Second hole further in
-                    dist2 = rng.uniform(dist1 + min_spacing, available_length - d2)
+                    # Second hole further in (but not into fillet zone)
+                    dist2 = rng.uniform(dist1 + min_spacing, available_length - d2 / 2)
                     hole1_distances = [dist1, dist2]
                 else:
                     # Not enough space for 2 holes, fall back to 1
@@ -835,7 +861,8 @@ class VariableLBracket:
         hole2_diameters = []
         hole2_distances = []
         if num_holes_leg2 > 0:
-            available_length = leg2_length - thickness
+            fillet_clearance = fillet_radius + min_fillet_hole_wall if fillet_radius > 0 else 0
+            available_length = leg2_length - thickness - fillet_clearance
 
             for _ in range(num_holes_leg2):
                 diam = rng.uniform(*ranges.hole_diameter)
@@ -845,7 +872,7 @@ class VariableLBracket:
             if num_holes_leg2 == 1:
                 diam = hole2_diameters[0]
                 min_dist = diam
-                max_dist = available_length - diam
+                max_dist = available_length - diam / 2
                 if max_dist > min_dist:
                     hole2_distances.append(rng.uniform(min_dist, max_dist))
                 else:
@@ -853,11 +880,11 @@ class VariableLBracket:
             else:
                 d1, d2 = hole2_diameters
                 min_spacing = (d1 + d2) / 2 + 3
-                total_space = available_length - d1 - d2
+                total_space = available_length - d1 / 2 - d2 / 2
 
                 if total_space > min_spacing:
                     dist1 = rng.uniform(d1, d1 + (total_space - min_spacing) / 2)
-                    dist2 = rng.uniform(dist1 + min_spacing, available_length - d2)
+                    dist2 = rng.uniform(dist1 + min_spacing, available_length - d2 / 2)
                     hole2_distances = [dist1, dist2]
                 else:
                     hole2_diameters = [hole2_diameters[0]]
