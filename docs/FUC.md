@@ -276,3 +276,12 @@ TOKENIZERS_PARALLELISM=false python your_script.py
 ```bash
 python scripts/analyze_vae_asymmetry.py --n-samples 200 --output outputs/vae_asymmetry.json
 ```
+
+```bash
+# New training script for variable geometry
+python scripts/train_variable_vae.py \
+    --train-size 5000 \
+    --epochs 100 \
+    --latent-dim 32 \
+    --output-dir outputs/vae_variable
+```
