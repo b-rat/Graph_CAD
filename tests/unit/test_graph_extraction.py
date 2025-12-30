@@ -12,6 +12,8 @@ from graph_cad.data import (
     extract_graph,
     extract_graph_from_solid,
 )
+from graph_cad.data.graph_extraction import extract_graph_from_solid_variable
+from graph_cad.data.l_bracket import VariableLBracket
 
 
 @pytest.fixture
@@ -241,3 +243,196 @@ class TestMultipleBrackets:
             assert graph.num_faces == 10
             assert graph.num_edges > 0
             assert graph.node_features.shape == (10, 8)
+
+
+# =============================================================================
+# Variable Topology Graph Extraction Tests
+# =============================================================================
+
+
+@pytest.fixture
+def variable_bracket_minimal():
+    """Create minimal variable bracket (no holes, no fillet)."""
+    return VariableLBracket(
+        leg1_length=100,
+        leg2_length=80,
+        width=30,
+        thickness=5,
+    )
+
+
+@pytest.fixture
+def variable_bracket_with_holes():
+    """Create variable bracket with holes."""
+    return VariableLBracket(
+        leg1_length=100,
+        leg2_length=80,
+        width=30,
+        thickness=5,
+        hole1_diameters=(8,),
+        hole1_distances=(20,),
+        hole2_diameters=(6, 6),
+        hole2_distances=(15, 45),
+    )
+
+
+class TestExtractGraphFromSolidVariable:
+    """Test variable topology graph extraction."""
+
+    def test_returns_brep_graph(self, variable_bracket_minimal):
+        """Should return BRepGraph instance."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        assert isinstance(graph, BRepGraph)
+
+    def test_minimal_bracket_has_at_least_6_faces(self, variable_bracket_minimal):
+        """Minimal L-bracket should have at least 6 faces."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        # CadQuery may create additional faces for L-shape geometry
+        assert graph.num_faces >= 6
+
+    def test_bracket_with_holes_has_more_faces(self, variable_bracket_with_holes):
+        """Bracket with holes should have additional faces."""
+        solid = variable_bracket_with_holes.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        # Should have more faces than base due to holes
+        assert graph.num_faces >= 8
+
+    def test_node_features_shape(self, variable_bracket_minimal):
+        """Node features should have shape (num_faces, 9)."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        # 9 features per node
+        assert graph.node_features.shape[1] == 9
+        assert graph.node_features.shape[0] == graph.num_faces
+
+    def test_node_features_include_curvature(self, variable_bracket_with_holes):
+        """Node features should include curvature values."""
+        solid = variable_bracket_with_holes.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        # Features: area(1), direction(3), centroid(3), curv1(1), curv2(1) = 9
+        assert graph.node_features.shape[1] == 9
+        # Curvatures are in columns 7 and 8
+        curvatures = graph.node_features[:, 7:9]
+        assert curvatures.shape == (graph.num_faces, 2)
+
+    def test_face_types_separate_array(self, variable_bracket_minimal):
+        """Face types should be stored as separate integer array."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        assert hasattr(graph, "face_types")
+        assert graph.face_types.shape[0] == graph.num_faces
+        assert graph.face_types.dtype in [np.int32, np.int64]
+
+    def test_face_types_planar_for_minimal(self, variable_bracket_minimal):
+        """Minimal bracket should have all planar faces (type 0)."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        # All faces should be planar (no holes or fillets)
+        assert np.all(graph.face_types == 0)
+
+    def test_face_types_cylindrical_for_holes(self, variable_bracket_with_holes):
+        """Bracket with holes should have cylindrical face types."""
+        solid = variable_bracket_with_holes.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        # Should have some cylindrical faces (type 1) from holes
+        num_cylindrical = np.sum(graph.face_types == 1)
+        # Should have at least some cylindrical faces
+        assert num_cylindrical >= 3
+
+    def test_edge_index_valid(self, variable_bracket_minimal):
+        """Edge indices should be valid face indices."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        assert np.all(graph.edge_index >= 0)
+        assert np.all(graph.edge_index < graph.num_faces)
+
+    def test_edge_features_shape(self, variable_bracket_minimal):
+        """Edge features should have shape (num_edges, 2)."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        assert graph.edge_features.shape == (graph.num_edges, 2)
+
+    def test_bbox_diagonal_positive(self, variable_bracket_minimal):
+        """Bounding box diagonal should be positive."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        assert graph.bbox_diagonal > 0
+
+
+class TestVariableGraphCurvature:
+    """Test curvature extraction for variable topology."""
+
+    def test_planar_faces_zero_curvature(self, variable_bracket_minimal):
+        """Planar faces should have approximately zero curvature."""
+        solid = variable_bracket_minimal.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        curvatures = graph.node_features[:, 7:9]
+        # All planar faces should have near-zero curvature
+        np.testing.assert_allclose(curvatures, 0.0, atol=0.01)
+
+    def test_cylindrical_faces_nonzero_curvature(self, variable_bracket_with_holes):
+        """Cylindrical faces should have non-zero curvature."""
+        solid = variable_bracket_with_holes.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+        cylindrical_mask = graph.face_types == 1
+        curvatures = graph.node_features[cylindrical_mask, 7:9]
+        # At least one principal curvature should be non-zero for cylinders
+        max_curvature = np.max(np.abs(curvatures))
+        assert max_curvature > 0
+
+
+class TestVariableTopologyVariety:
+    """Test graph extraction across different topologies."""
+
+    def test_random_variable_brackets_valid_graphs(self):
+        """Random variable brackets should produce valid graphs."""
+        rng = np.random.default_rng(42)
+
+        for _ in range(20):
+            bracket = VariableLBracket.random(rng)
+            solid = bracket.to_solid()
+            graph = extract_graph_from_solid_variable(solid)
+
+            # Should have at least 6 faces
+            assert graph.num_faces >= 6
+            # Node features should be 9D
+            assert graph.node_features.shape[1] == 9
+            # Face types should match num_faces
+            assert graph.face_types.shape[0] == graph.num_faces
+            # Should have some edges
+            assert graph.num_edges > 0
+
+    def test_topology_variety(self):
+        """Different topologies should produce different graphs."""
+        rng = np.random.default_rng(42)
+
+        face_counts = set()
+        for _ in range(50):
+            bracket = VariableLBracket.random(rng)
+            solid = bracket.to_solid()
+            graph = extract_graph_from_solid_variable(solid)
+            face_counts.add(graph.num_faces)
+
+        # Should see variety in face counts
+        assert len(face_counts) >= 3
+
+    def test_deterministic_extraction_variable(self):
+        """Variable graph extraction should be deterministic."""
+        bracket = VariableLBracket(
+            leg1_length=100,
+            leg2_length=80,
+            width=30,
+            thickness=5,
+            hole1_diameters=(8,),
+            hole1_distances=(20,),
+        )
+        solid = bracket.to_solid()
+
+        graph1 = extract_graph_from_solid_variable(solid)
+        graph2 = extract_graph_from_solid_variable(solid)
+
+        np.testing.assert_array_equal(graph1.node_features, graph2.node_features)
+        np.testing.assert_array_equal(graph1.face_types, graph2.face_types)
+        np.testing.assert_array_equal(graph1.edge_index, graph2.edge_index)

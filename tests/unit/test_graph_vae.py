@@ -10,12 +10,20 @@ torch_geometric = pytest.importorskip("torch_geometric")
 from torch_geometric.data import Batch, Data
 
 from graph_cad.data import LBracket, extract_graph_from_solid
+from graph_cad.data.graph_extraction import extract_graph_from_solid_variable
+from graph_cad.data.l_bracket import VariableLBracket
 from graph_cad.models import (
     GraphVAE,
     GraphVAEConfig,
     GraphVAEDecoder,
     GraphVAEEncoder,
     brep_graph_to_pyg,
+)
+from graph_cad.models.graph_vae import (
+    VariableGraphVAE,
+    VariableGraphVAEConfig,
+    VariableGraphVAEEncoder,
+    VariableGraphVAEDecoder,
 )
 
 
@@ -357,3 +365,320 @@ class TestEndToEnd:
 
         # Loss should decrease (or at least not increase significantly)
         assert final_loss <= initial_loss * 1.1  # Allow some noise
+
+
+# =============================================================================
+# Variable Topology VAE Tests
+# =============================================================================
+
+
+@pytest.fixture
+def variable_config():
+    """Create default variable VAE config."""
+    return VariableGraphVAEConfig(
+        node_features=9,
+        edge_features=2,
+        num_face_types=8,
+        face_embed_dim=8,
+        max_nodes=20,
+        max_edges=50,
+        hidden_dim=32,
+        num_gat_layers=2,
+        num_heads=2,
+        latent_dim=16,
+    )
+
+
+@pytest.fixture
+def variable_model(variable_config):
+    """Create a Variable Graph VAE model."""
+    return VariableGraphVAE(variable_config)
+
+
+@pytest.fixture
+def variable_bracket_data():
+    """Create sample variable bracket graph data."""
+    bracket = VariableLBracket(
+        leg1_length=100,
+        leg2_length=80,
+        width=30,
+        thickness=5,
+        hole1_diameters=(8,),
+        hole1_distances=(20,),
+    )
+    solid = bracket.to_solid()
+    graph = extract_graph_from_solid_variable(solid)
+    return graph, bracket
+
+
+@pytest.fixture
+def variable_pyg_data(variable_bracket_data):
+    """Convert variable graph to PyG format."""
+    graph, _ = variable_bracket_data
+    return Data(
+        x=torch.tensor(graph.node_features, dtype=torch.float32),
+        face_types=torch.tensor(graph.face_types, dtype=torch.long),
+        edge_index=torch.tensor(graph.edge_index, dtype=torch.long),
+        edge_attr=torch.tensor(graph.edge_features, dtype=torch.float32),
+    )
+
+
+class TestVariableGraphVAEConfig:
+    """Test variable VAE configuration."""
+
+    def test_default_config(self):
+        """Default config should have expected values."""
+        config = VariableGraphVAEConfig()
+        assert config.node_features == 9
+        assert config.edge_features == 2
+        assert config.num_face_types == 8
+        assert config.face_embed_dim == 8
+        assert config.max_nodes == 20
+        assert config.max_edges == 50
+        assert config.latent_dim == 32
+
+    def test_custom_config(self):
+        """Custom config values should be stored."""
+        config = VariableGraphVAEConfig(latent_dim=64, hidden_dim=128)
+        assert config.latent_dim == 64
+        assert config.hidden_dim == 128
+
+
+class TestVariableGraphVAEEncoder:
+    """Test variable VAE encoder."""
+
+    def test_output_shapes(self, variable_config, variable_pyg_data):
+        """Encoder should output mu and logvar of correct shape."""
+        encoder = VariableGraphVAEEncoder(variable_config)
+        mu, logvar = encoder(
+            variable_pyg_data.x,
+            variable_pyg_data.face_types,
+            variable_pyg_data.edge_index,
+            variable_pyg_data.edge_attr,
+        )
+        assert mu.shape == (1, variable_config.latent_dim)
+        assert logvar.shape == (1, variable_config.latent_dim)
+
+    def test_batched_encoding(self, variable_config, variable_pyg_data):
+        """Encoder should handle batched graphs."""
+        encoder = VariableGraphVAEEncoder(variable_config)
+        # Create batch of 3 graphs
+        data_list = [variable_pyg_data, variable_pyg_data, variable_pyg_data]
+        batch = Batch.from_data_list(data_list)
+
+        mu, logvar = encoder(
+            batch.x,
+            batch.face_types,
+            batch.edge_index,
+            batch.edge_attr,
+            batch=batch.batch,
+        )
+        assert mu.shape == (3, variable_config.latent_dim)
+        assert logvar.shape == (3, variable_config.latent_dim)
+
+    def test_face_type_embedding(self, variable_config, variable_pyg_data):
+        """Encoder should incorporate face type embeddings."""
+        encoder = VariableGraphVAEEncoder(variable_config)
+        # Check that embedding layer exists
+        assert hasattr(encoder, "face_type_embedding")
+        assert encoder.face_type_embedding.num_embeddings == variable_config.num_face_types
+
+    def test_outputs_finite(self, variable_config, variable_pyg_data):
+        """Encoder outputs should be finite."""
+        encoder = VariableGraphVAEEncoder(variable_config)
+        mu, logvar = encoder(
+            variable_pyg_data.x,
+            variable_pyg_data.face_types,
+            variable_pyg_data.edge_index,
+            variable_pyg_data.edge_attr,
+        )
+        assert torch.isfinite(mu).all()
+        assert torch.isfinite(logvar).all()
+
+
+class TestVariableGraphVAEDecoder:
+    """Test variable VAE decoder."""
+
+    def test_output_keys(self, variable_config):
+        """Decoder should output required keys."""
+        decoder = VariableGraphVAEDecoder(variable_config)
+        z = torch.randn(1, variable_config.latent_dim)
+        outputs = decoder(z)
+
+        assert "node_features" in outputs
+        assert "edge_features" in outputs
+        assert "node_mask_logits" in outputs
+        assert "edge_mask_logits" in outputs
+        assert "face_type_logits" in outputs
+
+    def test_output_shapes(self, variable_config):
+        """Decoder should output correct shapes."""
+        decoder = VariableGraphVAEDecoder(variable_config)
+        z = torch.randn(1, variable_config.latent_dim)
+        outputs = decoder(z)
+
+        assert outputs["node_features"].shape == (
+            1, variable_config.max_nodes, variable_config.node_features
+        )
+        assert outputs["edge_features"].shape == (
+            1, variable_config.max_edges, variable_config.edge_features
+        )
+        assert outputs["node_mask_logits"].shape == (1, variable_config.max_nodes)
+        assert outputs["edge_mask_logits"].shape == (1, variable_config.max_edges)
+        assert outputs["face_type_logits"].shape == (
+            1, variable_config.max_nodes, variable_config.num_face_types
+        )
+
+    def test_batched_decoding(self, variable_config):
+        """Decoder should handle batched latent vectors."""
+        decoder = VariableGraphVAEDecoder(variable_config)
+        z = torch.randn(5, variable_config.latent_dim)
+        outputs = decoder(z)
+
+        assert outputs["node_features"].shape[0] == 5
+        assert outputs["node_mask_logits"].shape[0] == 5
+
+    def test_outputs_finite(self, variable_config):
+        """Decoder outputs should be finite."""
+        decoder = VariableGraphVAEDecoder(variable_config)
+        z = torch.randn(1, variable_config.latent_dim)
+        outputs = decoder(z)
+
+        for key, value in outputs.items():
+            assert torch.isfinite(value).all(), f"{key} contains non-finite values"
+
+
+class TestVariableGraphVAE:
+    """Test full variable VAE model."""
+
+    def test_forward_returns_dict(self, variable_model, variable_pyg_data):
+        """Forward should return dict with expected keys."""
+        outputs = variable_model(
+            variable_pyg_data.x,
+            variable_pyg_data.face_types,
+            variable_pyg_data.edge_index,
+            variable_pyg_data.edge_attr,
+        )
+
+        assert "node_features" in outputs
+        assert "edge_features" in outputs
+        assert "node_mask_logits" in outputs
+        assert "edge_mask_logits" in outputs
+        assert "face_type_logits" in outputs
+        assert "mu" in outputs
+        assert "logvar" in outputs
+        assert "z" in outputs
+
+    def test_latent_shapes(self, variable_model, variable_config, variable_pyg_data):
+        """Latent vectors should have correct shapes."""
+        outputs = variable_model(
+            variable_pyg_data.x,
+            variable_pyg_data.face_types,
+            variable_pyg_data.edge_index,
+            variable_pyg_data.edge_attr,
+        )
+        assert outputs["mu"].shape == (1, variable_config.latent_dim)
+        assert outputs["logvar"].shape == (1, variable_config.latent_dim)
+        assert outputs["z"].shape == (1, variable_config.latent_dim)
+
+    def test_gradient_flow(self, variable_model, variable_pyg_data):
+        """Gradients should flow through reparameterization."""
+        variable_model.train()
+        outputs = variable_model(
+            variable_pyg_data.x,
+            variable_pyg_data.face_types,
+            variable_pyg_data.edge_index,
+            variable_pyg_data.edge_attr,
+        )
+
+        # Compute simple loss and backward
+        loss = (
+            outputs["node_features"].sum() +
+            outputs["node_mask_logits"].sum() +
+            outputs["face_type_logits"].sum()
+        )
+        loss.backward()
+
+        # Check at least some encoder params have gradients
+        encoder_grads = sum(
+            1 for p in variable_model.encoder.parameters()
+            if p.requires_grad and p.grad is not None
+        )
+        assert encoder_grads > 0, "No encoder parameters have gradients"
+
+        # Check at least some decoder params have gradients
+        decoder_grads = sum(
+            1 for p in variable_model.decoder.parameters()
+            if p.requires_grad and p.grad is not None
+        )
+        assert decoder_grads > 0, "No decoder parameters have gradients"
+
+    def test_encode_method(self, variable_model, variable_config, variable_pyg_data):
+        """Encode method should return mu and logvar."""
+        mu, logvar = variable_model.encode(
+            variable_pyg_data.x,
+            variable_pyg_data.face_types,
+            variable_pyg_data.edge_index,
+            variable_pyg_data.edge_attr,
+        )
+        assert mu.shape == (1, variable_config.latent_dim)
+        assert logvar.shape == (1, variable_config.latent_dim)
+
+    def test_decode_method(self, variable_model, variable_config):
+        """Decode method should return outputs dict."""
+        z = torch.randn(1, variable_config.latent_dim)
+        outputs = variable_model.decode(z)
+
+        assert "node_features" in outputs
+        assert "face_type_logits" in outputs
+
+
+class TestVariableVAEWithRealData:
+    """End-to-end tests with real variable bracket data."""
+
+    def test_variable_bracket_to_reconstruction(self, variable_model):
+        """Full pipeline: variable bracket -> graph -> encode -> decode."""
+        bracket = VariableLBracket(
+            leg1_length=100,
+            leg2_length=80,
+            width=30,
+            thickness=5,
+            hole1_diameters=(8,),
+            hole1_distances=(20,),
+        )
+        solid = bracket.to_solid()
+        graph = extract_graph_from_solid_variable(solid)
+
+        # Convert to tensors
+        x = torch.tensor(graph.node_features, dtype=torch.float32)
+        face_types = torch.tensor(graph.face_types, dtype=torch.long)
+        edge_index = torch.tensor(graph.edge_index, dtype=torch.long)
+        edge_attr = torch.tensor(graph.edge_features, dtype=torch.float32)
+
+        # Forward pass
+        variable_model.eval()
+        outputs = variable_model(x, face_types, edge_index, edge_attr)
+
+        # Check outputs are valid
+        assert torch.isfinite(outputs["node_features"]).all()
+        assert torch.isfinite(outputs["face_type_logits"]).all()
+
+    def test_random_brackets_encode_successfully(self, variable_model):
+        """Various random brackets should encode without error."""
+        rng = np.random.default_rng(42)
+
+        for _ in range(5):
+            bracket = VariableLBracket.random(rng)
+            solid = bracket.to_solid()
+            graph = extract_graph_from_solid_variable(solid)
+
+            x = torch.tensor(graph.node_features, dtype=torch.float32)
+            face_types = torch.tensor(graph.face_types, dtype=torch.long)
+            edge_index = torch.tensor(graph.edge_index, dtype=torch.long)
+            edge_attr = torch.tensor(graph.edge_features, dtype=torch.float32)
+
+            variable_model.eval()
+            mu, logvar = variable_model.encode(x, face_types, edge_index, edge_attr)
+
+            assert torch.isfinite(mu).all()
+            assert torch.isfinite(logvar).all()

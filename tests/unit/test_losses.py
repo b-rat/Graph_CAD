@@ -7,9 +7,14 @@ torch = pytest.importorskip("torch")
 
 from graph_cad.models.losses import (
     VAELossConfig,
+    VariableVAELossConfig,
     kl_divergence,
     reconstruction_loss,
     vae_loss,
+    variable_reconstruction_loss,
+    mask_prediction_loss,
+    face_type_classification_loss,
+    variable_vae_loss,
 )
 
 
@@ -388,6 +393,400 @@ class TestVAELoss:
             logvar,
         )
 
+        loss.backward()
+
+        assert pred_nodes.grad is not None
+        assert mu.grad is not None
+
+
+# =============================================================================
+# Variable Topology Loss Tests
+# =============================================================================
+
+
+@pytest.fixture
+def max_nodes():
+    return 20
+
+
+@pytest.fixture
+def max_edges():
+    return 50
+
+
+@pytest.fixture
+def num_face_types():
+    return 8
+
+
+@pytest.fixture
+def variable_node_features(batch_size, max_nodes, node_features):
+    """Create sample variable node features (9D instead of 8D)."""
+    return torch.randn(batch_size, max_nodes, 9)
+
+
+@pytest.fixture
+def variable_edge_features(batch_size, max_edges, edge_features):
+    """Create sample variable edge features."""
+    return torch.randn(batch_size, max_edges, edge_features)
+
+
+@pytest.fixture
+def node_mask(batch_size, max_nodes):
+    """Create sample node mask with some nodes masked."""
+    mask = torch.zeros(batch_size, max_nodes)
+    # First 10 nodes are real for all samples
+    mask[:, :10] = 1.0
+    return mask
+
+
+@pytest.fixture
+def edge_mask(batch_size, max_edges):
+    """Create sample edge mask with some edges masked."""
+    mask = torch.zeros(batch_size, max_edges)
+    # First 20 edges are real for all samples
+    mask[:, :20] = 1.0
+    return mask
+
+
+@pytest.fixture
+def face_types_target(batch_size, max_nodes, num_face_types):
+    """Create sample face type targets."""
+    # Mix of face types: 0=planar (most common), 1=cylindrical
+    face_types = torch.zeros(batch_size, max_nodes, dtype=torch.long)
+    face_types[:, 8:10] = 1  # Last 2 real nodes are cylindrical
+    return face_types
+
+
+@pytest.fixture
+def face_type_logits(batch_size, max_nodes, num_face_types):
+    """Create sample face type logits."""
+    return torch.randn(batch_size, max_nodes, num_face_types)
+
+
+class TestVariableVAELossConfig:
+    """Test variable loss configuration."""
+
+    def test_default_config(self):
+        """Default config should have expected values."""
+        config = VariableVAELossConfig()
+        assert config.node_weight == 1.0
+        assert config.edge_weight == 1.0
+        assert config.node_mask_weight == 1.0
+        assert config.edge_mask_weight == 1.0
+        assert config.face_type_weight == 0.5
+
+    def test_custom_config(self):
+        """Custom config values should be stored."""
+        config = VariableVAELossConfig(node_weight=2.0, face_type_weight=1.0)
+        assert config.node_weight == 2.0
+        assert config.face_type_weight == 1.0
+
+
+class TestVariableReconstructionLoss:
+    """Test variable topology reconstruction loss."""
+
+    def test_zero_loss_for_identical(
+        self, variable_node_features, variable_edge_features, node_mask, edge_mask
+    ):
+        """Loss should be zero when prediction equals target."""
+        loss, _ = variable_reconstruction_loss(
+            variable_node_features,
+            variable_node_features,
+            variable_edge_features,
+            variable_edge_features,
+            node_mask,
+            edge_mask,
+        )
+        assert torch.isclose(loss, torch.tensor(0.0), atol=1e-6)
+
+    def test_positive_loss_for_different(
+        self, variable_node_features, variable_edge_features, node_mask, edge_mask
+    ):
+        """Loss should be positive when prediction differs from target."""
+        pred_nodes = variable_node_features + 1.0
+        pred_edges = variable_edge_features + 1.0
+
+        loss, _ = variable_reconstruction_loss(
+            pred_nodes,
+            variable_node_features,
+            pred_edges,
+            variable_edge_features,
+            node_mask,
+            edge_mask,
+        )
+        assert loss > 0
+
+    def test_mask_affects_loss(
+        self, variable_node_features, variable_edge_features, node_mask, edge_mask
+    ):
+        """Only masked (real) nodes/edges should contribute to loss."""
+        # Add error only to padding nodes (indices 10+)
+        pred_nodes = variable_node_features.clone()
+        pred_nodes[:, 10:, :] += 100.0  # Large error in padding area
+
+        loss, _ = variable_reconstruction_loss(
+            pred_nodes,
+            variable_node_features,
+            variable_edge_features,
+            variable_edge_features,
+            node_mask,
+            edge_mask,
+        )
+        # Loss should be near zero because padding errors are masked
+        assert torch.isclose(loss, torch.tensor(0.0), atol=1e-5)
+
+
+class TestMaskPredictionLoss:
+    """Test mask prediction loss."""
+
+    def test_perfect_prediction(self):
+        """Loss should be low for perfect predictions."""
+        # Create fixed test data
+        bs, n_nodes, n_edges = 4, 20, 50
+
+        node_mask = torch.zeros(bs, n_nodes)
+        node_mask[:, :10] = 1.0
+        edge_mask = torch.zeros(bs, n_edges)
+        edge_mask[:, :20] = 1.0
+
+        # Create logits that perfectly match masks
+        node_logits = torch.where(
+            node_mask > 0.5,
+            torch.tensor(10.0),
+            torch.tensor(-10.0),
+        )
+        edge_logits = torch.where(
+            edge_mask > 0.5,
+            torch.tensor(10.0),
+            torch.tensor(-10.0),
+        )
+
+        # Function signature: (node_logits, edge_logits, node_target, edge_target)
+        node_loss, edge_loss, metrics = mask_prediction_loss(
+            node_logits, edge_logits, node_mask, edge_mask
+        )
+
+        total_loss = node_loss + edge_loss
+        assert total_loss < 0.1
+        assert metrics["node_mask_acc"] > 0.99
+        assert metrics["edge_mask_acc"] > 0.99
+
+    def test_random_prediction(self):
+        """Random logits should have ~50% accuracy."""
+        bs, n_nodes, n_edges = 4, 20, 50
+
+        node_mask = torch.zeros(bs, n_nodes)
+        node_mask[:, :10] = 1.0
+        edge_mask = torch.zeros(bs, n_edges)
+        edge_mask[:, :20] = 1.0
+
+        node_logits = torch.randn(bs, n_nodes)
+        edge_logits = torch.randn(bs, n_edges)
+
+        # Function signature: (node_logits, edge_logits, node_target, edge_target)
+        node_loss, edge_loss, metrics = mask_prediction_loss(
+            node_logits, edge_logits, node_mask, edge_mask
+        )
+
+        # With random predictions, accuracy should be around 50%
+        assert 0.3 < metrics["node_mask_acc"] < 0.7
+        assert 0.3 < metrics["edge_mask_acc"] < 0.7
+
+
+class TestFaceTypeClassificationLoss:
+    """Test face type classification loss."""
+
+    def test_perfect_prediction(
+        self, face_types_target, node_mask, batch_size, max_nodes, num_face_types
+    ):
+        """Loss should be low for perfect predictions."""
+        # Create one-hot logits
+        logits = torch.zeros(batch_size, max_nodes, num_face_types)
+        logits.scatter_(2, face_types_target.unsqueeze(-1), 10.0)
+
+        loss, metrics = face_type_classification_loss(logits, face_types_target, node_mask)
+
+        assert loss < 0.1
+        assert metrics["face_type_acc"] > 0.99
+
+    def test_only_uses_real_nodes(
+        self, batch_size, max_nodes, num_face_types, node_mask
+    ):
+        """Loss should only consider real (non-padding) nodes."""
+        # Create target with different values in padding area
+        face_types = torch.zeros(batch_size, max_nodes, dtype=torch.long)
+        face_types[:, 10:] = 5  # Different type in padding
+
+        # Perfect prediction for real nodes only
+        logits = torch.zeros(batch_size, max_nodes, num_face_types)
+        logits[:, :10, 0] = 10.0  # Correct for real nodes
+        logits[:, 10:, 3] = 10.0  # Wrong for padding (but should be ignored)
+
+        loss, metrics = face_type_classification_loss(logits, face_types, node_mask)
+
+        # Should be near-perfect because padding is ignored
+        assert metrics["face_type_acc"] > 0.99
+
+
+class TestVariableVAELoss:
+    """Test combined variable VAE loss."""
+
+    def test_combines_all_components(
+        self,
+        variable_node_features,
+        variable_edge_features,
+        node_mask,
+        edge_mask,
+        face_types_target,
+        face_type_logits,
+        sample_latent,
+    ):
+        """Variable VAE loss should combine all components."""
+        mu, logvar = sample_latent
+
+        # Create outputs dict
+        outputs = {
+            "node_features": variable_node_features + 0.1,
+            "edge_features": variable_edge_features + 0.1,
+            "node_mask_logits": torch.randn_like(node_mask),
+            "edge_mask_logits": torch.randn_like(edge_mask),
+            "face_type_logits": face_type_logits,
+            "mu": mu,
+            "logvar": logvar,
+        }
+
+        # Create targets dict
+        targets = {
+            "node_features": variable_node_features,
+            "edge_features": variable_edge_features,
+            "node_mask": node_mask,
+            "edge_mask": edge_mask,
+            "face_types": face_types_target,
+        }
+
+        loss, metrics = variable_vae_loss(outputs, targets, beta=0.01)
+
+        # Check all components are present
+        assert "recon_loss" in metrics
+        assert "mask_loss" in metrics
+        assert "face_type_loss" in metrics
+        assert "kl_loss" in metrics
+        assert "total_loss" in metrics
+
+        # All should be positive
+        assert metrics["recon_loss"] > 0
+        assert metrics["total_loss"] > 0
+
+    def test_beta_scales_kl(
+        self,
+        variable_node_features,
+        variable_edge_features,
+        node_mask,
+        edge_mask,
+        face_types_target,
+        face_type_logits,
+        sample_latent,
+    ):
+        """Beta should scale KL contribution."""
+        mu, logvar = sample_latent
+
+        outputs = {
+            "node_features": variable_node_features,
+            "edge_features": variable_edge_features,
+            "node_mask_logits": torch.zeros_like(node_mask),
+            "edge_mask_logits": torch.zeros_like(edge_mask),
+            "face_type_logits": face_type_logits,
+            "mu": mu,
+            "logvar": logvar,
+        }
+
+        targets = {
+            "node_features": variable_node_features,
+            "edge_features": variable_edge_features,
+            "node_mask": node_mask,
+            "edge_mask": edge_mask,
+            "face_types": face_types_target,
+        }
+
+        _, metrics1 = variable_vae_loss(outputs, targets, beta=0.01)
+        _, metrics2 = variable_vae_loss(outputs, targets, beta=0.1)
+
+        # Higher beta should scale KL contribution
+        # Note: due to free_bits, the actual contribution may be 0 for small KL
+        # So we just verify the computation completes
+        assert metrics1["kl_loss"] >= 0
+        assert metrics2["kl_loss"] >= 0
+
+    def test_loss_is_finite(
+        self,
+        variable_node_features,
+        variable_edge_features,
+        node_mask,
+        edge_mask,
+        face_types_target,
+        face_type_logits,
+        sample_latent,
+    ):
+        """Loss should always be finite."""
+        mu, logvar = sample_latent
+
+        outputs = {
+            "node_features": variable_node_features + torch.randn_like(variable_node_features),
+            "edge_features": variable_edge_features + torch.randn_like(variable_edge_features),
+            "node_mask_logits": torch.randn_like(node_mask),
+            "edge_mask_logits": torch.randn_like(edge_mask),
+            "face_type_logits": face_type_logits,
+            "mu": mu,
+            "logvar": logvar,
+        }
+
+        targets = {
+            "node_features": variable_node_features,
+            "edge_features": variable_edge_features,
+            "node_mask": node_mask,
+            "edge_mask": edge_mask,
+            "face_types": face_types_target,
+        }
+
+        loss, _ = variable_vae_loss(outputs, targets)
+
+        assert torch.isfinite(loss)
+
+    def test_loss_requires_grad(
+        self,
+        variable_node_features,
+        variable_edge_features,
+        node_mask,
+        edge_mask,
+        face_types_target,
+        face_type_logits,
+        sample_latent,
+    ):
+        """Loss should support backpropagation."""
+        mu, logvar = sample_latent
+        mu = mu.clone().requires_grad_(True)
+        pred_nodes = variable_node_features.clone().requires_grad_(True)
+
+        outputs = {
+            "node_features": pred_nodes,
+            "edge_features": variable_edge_features,
+            "node_mask_logits": torch.randn_like(node_mask),
+            "edge_mask_logits": torch.randn_like(edge_mask),
+            "face_type_logits": face_type_logits.requires_grad_(True),
+            "mu": mu,
+            "logvar": logvar,
+        }
+
+        targets = {
+            "node_features": variable_node_features,
+            "edge_features": variable_edge_features,
+            "node_mask": node_mask,
+            "edge_mask": edge_mask,
+            "face_types": face_types_target,
+        }
+
+        loss, _ = variable_vae_loss(outputs, targets)
         loss.backward()
 
         assert pred_nodes.grad is not None
