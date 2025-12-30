@@ -508,7 +508,7 @@ class VariableLBracket:
         """Expected number of faces based on topology."""
         # Base L-bracket: 6 planar faces
         # Each hole adds 2 cylindrical faces (inner surface of hole)
-        # Fillet adds 1 torus face
+        # Fillet adds 1 cylindrical face (quarter-cylinder for straight edge)
         base = 6
         holes = 2 * (self.num_holes_leg1 + self.num_holes_leg2)
         fillet = 1 if self.has_fillet else 0

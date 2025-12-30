@@ -860,11 +860,13 @@ VariableLBracket(
 | Code | Type | Geometry |
 |------|------|----------|
 | 0 | PLANAR | Flat faces |
-| 1 | CYLINDRICAL | Holes |
-| 2 | TORUS | Fillets |
-| 3 | CONE | Chamfers |
+| 1 | CYLINDRICAL | Holes, **straight-edge fillets** |
+| 2 | TORUS | Curved-edge fillets only |
+| 3 | CONE | Chamfers, tapered holes |
 | 4 | SPHERE | Ball ends |
 | 5-7 | Other | B-spline, etc. |
+
+**Note on fillets:** A fillet on a straight edge (like L-bracket inner corner) creates a **cylindrical** surface (quarter-cylinder). Only fillets on curved edges produce torus surfaces.
 
 **Variable topology features:**
 - `extract_graph_from_solid_variable()` — Returns 9D node features + face_types array

@@ -42,13 +42,13 @@ from OCP.TopoDS import TopoDS, TopoDS_Face
 
 # Face type codes (expanded vocabulary for variable topology)
 FACE_TYPE_PLANAR = 0
-FACE_TYPE_CYLINDRICAL = 1
-FACE_TYPE_TORUS = 2       # Fillet surfaces
-FACE_TYPE_CONE = 3        # Chamfers, tapered holes
-FACE_TYPE_SPHERE = 4      # Ball ends
-FACE_TYPE_BSPLINE = 5     # Freeform surfaces
-FACE_TYPE_BEZIER = 6      # Bezier surfaces
-FACE_TYPE_OTHER = 7       # Catch-all for unknown types
+FACE_TYPE_CYLINDRICAL = 1  # Holes, straight-edge fillets (quarter-cylinders)
+FACE_TYPE_TORUS = 2        # Curved-edge fillets only
+FACE_TYPE_CONE = 3         # Chamfers, tapered holes
+FACE_TYPE_SPHERE = 4       # Ball ends
+FACE_TYPE_BSPLINE = 5      # Freeform surfaces
+FACE_TYPE_BEZIER = 6       # Bezier surfaces
+FACE_TYPE_OTHER = 7        # Catch-all for unknown types
 
 NUM_FACE_TYPES = 8  # Total vocabulary size for embeddings
 
