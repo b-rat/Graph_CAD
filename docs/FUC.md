@@ -18,12 +18,8 @@ git remote set-url origin https://GIT_TOKEN@github.com/b-rat/Graph_CAD.git
 git config user.email "brian.ratliff@mechnlengr.com"
 git config user.name "b-rat"
 git pull
-apt-get update && apt-get install -y git-lfs
-git lfs install
-git lfs pull
-pip install -r requirements-cloud-gpu.txt
-pip install -e .
-pip install hf_transfer
+apt-get update && apt-get install -y git-lfs && git lfs install && git lfs pull
+pip install -r requirements-cloud-gpu.txt && pip install -e . && pip install hf_transfer
 echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc # changes default download for hugging face to network volume
 source ~/.bashrc            # re-read bash file
 git add -f outputs/latent_editor/best_model.pt
@@ -281,6 +277,14 @@ python scripts/analyze_vae_asymmetry.py --n-samples 200 --output outputs/vae_asy
 # New training script for variable geometry
 python scripts/train_variable_vae.py \
     --train-size 5000 \
+    --epochs 100 \
+    --latent-dim 32 \
+    --output-dir outputs/vae_variable
+```
+
+```bash
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
     --epochs 100 \
     --latent-dim 32 \
     --output-dir outputs/vae_variable
