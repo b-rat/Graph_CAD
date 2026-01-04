@@ -37,717 +37,238 @@ black graph_cad tests && ruff check graph_cad tests && mypy graph_cad
 
 ## Architecture Overview
 
-### Two-Phase Approach
-
-1. **Phase 1 (Complete)**: Graph Autoencoder
-   - STEP file → Graph → Latent vector → Graph → Parameters → STEP file
-   - Enables compression and reconstruction of CAD geometry
-
-2. **Phase 2 (Complete)**: LLM Latent Editor
-   - Natural language instruction + latent → edited latent
-   - "make leg1 20mm longer" → modified geometry
-
 ### System Pipeline
 
 ```
-Input STEP → Graph Extraction → VAE Encode → Latent (16D)
+Input STEP → Graph Extraction → VAE Encode → Latent (32D)
                                                 ↓
                             LLM Latent Editor (instruction)
                                                 ↓
                                          Edited Latent
                                                 ↓
-                              VAE Decode → Graph Features
+                         LatentRegressor → 4 Core Parameters
                                                 ↓
-                      FeatureRegressor → 8 Parameters
-                                                ↓
-                            LBracket → Output STEP
+                          VariableLBracket → Output STEP
 ```
 
-## PoC Scope: L-Brackets
+### Two-Phase Approach
 
-**Fixed topology simplifies the problem:**
-- Single part family: L-brackets with 2 mounting holes
-- Constant topology: Always 10 faces (8 bracket + 2 cylindrical holes)
-- 8 variable parameters: leg lengths, width, thickness, hole diameters, hole distances
-- Face-adjacency graph: 10 nodes × 8 features + 22 edges × 2 features = 124 total features
+1. **Phase 1 (Complete)**: Fixed Topology PoC
+   - L-brackets with exactly 2 holes, 10 faces
+   - 16D latent, 8 parameters
+   - Achieved 80.2% direction accuracy
 
-**L-Bracket Parameters:**
-
-| Parameter | Min | Max | Description |
-|-----------|-----|-----|-------------|
-| `leg1_length` | 50 | 200 | Length along +X (mm) |
-| `leg2_length` | 50 | 200 | Length along +Z (mm) |
-| `width` | 20 | 60 | Extent along Y (mm) |
-| `thickness` | 3 | 12 | Material thickness (mm) |
-| `hole1_diameter` | 4 | 12 | Hole in leg 1 (mm) |
-| `hole2_diameter` | 4 | 12 | Hole in leg 2 (mm) |
-| `hole1_distance` | derived | derived | From end of leg 1 to hole center |
-| `hole2_distance` | derived | derived | From end of leg 2 to hole center |
-
-## Key Findings
-
-### VAE Reconstruction Limit
-
-**Critical Discovery**: The VAE introduces an irreducible information bottleneck.
-
-| Model | Features | Parameter MAE |
-|-------|----------|---------------|
-| GNN on original graphs | 124D (exact) | ~5mm |
-| GNN on VAE-reconstructed graphs | 124D (lossy) | ~12.9mm |
-| FeatureRegressor on VAE-reconstructed | 124D (lossy) | ~12.4mm |
-
-**~12mm MAE is the theoretical limit** for any parameter predictor operating on VAE-decoded features. This is not a regressor limitation—it's information lost during encode/decode.
+2. **Phase 2 (In Progress)**: Variable Topology
+   - L-brackets with 0-4 holes, optional fillets, 6-15 faces
+   - 32D latent, 4 core parameters
+   - VAE trained, latent editor training in progress
 
 ---
 
-## Ablation Studies
+## Current Status: Variable Topology (Jan 2026)
 
-### VAE β Parameter
+### Variable Topology VAE — Training Complete ✓
 
-The β parameter controls the trade-off between reconstruction fidelity and latent regularity.
+**Test Metrics:**
 
-| β Value | area variance | edge_length variance | Result |
-|---------|---------------|----------------------|--------|
-| 0.1 | 1.8% | 11.1% | Severe variance collapse |
-| **0.01** | **89.2%** | **79.0%** | **Optimal** |
-| 0.001 | 85.5% | 76.9% | No improvement |
+| Metric | Value | Assessment |
+|--------|-------|------------|
+| Node Mask Accuracy | 100% | Perfect topology prediction |
+| Edge Mask Accuracy | 100% | Perfect topology prediction |
+| Face Type Accuracy | 100% | Perfect PLANAR/HOLE/FILLET classification |
+| Reconstruction Loss | 0.0173 | Low |
+| Active Latent Dims | 32/32 (100%) | No dimension collapse |
 
-**BKM**: Use β=0.01 for L-bracket training.
+**Checkpoint:** `outputs/vae_variable/best_model.pt`
 
-### Latent Dimension
+### Latent Space Analysis
 
-8D latent is theoretically sufficient (matches 8 parameters), but 16D provides smoother interpolation:
+**Dimension Health (vs Fixed Topology):**
 
-| Latent Dim | Node MSE | Interpolation Quality |
-|------------|----------|-----------------------|
-| 8D | 0.000883 | Acceptable |
-| **16D** | 0.000891 | **Optimal** |
-| 64D | 0.000882 | Equivalent |
+| Metric | Fixed (aux-VAE) | Variable | Notes |
+|--------|-----------------|----------|-------|
+| Active dims | 8/16 (50%) | 32/32 (100%) | Major improvement |
+| Collapsed dims | 8 | 0 | No collapse |
+| Node MSE | 0.00073 | 0.0085 | Expected for harder task |
 
-**BKM**: Use 16D for best balance of compression and interpolation.
+**Parameter Correlations — Weak:**
 
-### FeatureRegressor Output Constraints
+| Parameter | Best Latent Dim | Correlation |
+|-----------|-----------------|-------------|
+| leg1_length | dim 2 | r=0.088 |
+| leg2_length | dim 24 | r=0.112 |
+| width | dim 22 | r=0.055 |
+| thickness | dim 25 | r=-0.073 |
 
-Attempted fixes for out-of-range predictions (normalized values outside [0,1]):
+**Why weak?** VAE trained with `aux_weight=0.0` — latent encodes geometry/topology, not explicit parameters.
 
-| Approach | Result |
-|----------|--------|
-| Sigmoid output | Vanishing gradients, training didn't converge |
-| Clamping in denormalize | Training worked, but gradient interpretation changed |
-| **No constraint** | Can produce impossible params, but training stable |
+**Topology Clustering — Good:**
+- 10 distinct topology groups detected
+- Average inter-group distance: 3.53
+- Similar topologies (same face count, hole count, fillet) cluster together
 
-**BKM**: No output constraint. Occasional impossible values (e.g., negative lengths) accepted as PoC limitation.
+### Parameter Prediction Approaches
 
-### Parameter Predictor Architecture
+Two architectures tested for predicting L-bracket parameters:
 
-Compared GNN vs MLP for predicting parameters from VAE-decoded features:
+**1. Feature Regressor (via decoded features):**
+```
+z → VAE.decode() → features (280D) → MLP → params
+```
+- Test MAE: 21.84mm (poor)
+- leg1/leg2: ~37mm MAE (near random)
+- Compounds decoder reconstruction error
 
-| Architecture | Input | Parameter MAE |
-|--------------|-------|---------------|
-| GNN (graph structure) | VAE-reconstructed graph | ~12.9mm |
-| **MLP (FeatureRegressor)** | Flattened 124D features | **~12.4mm** |
+**2. Latent Regressor (direct from z) — Recommended:**
+```
+z (32D) → MLP → params (4D)
+```
+- Bypasses decoder entirely
+- Training in progress
 
-**BKM**: Simple MLP performs equivalently to GNN on fixed-topology graphs. Use FeatureRegressor for simplicity.
+**Conceptual Note:** For simple parametric templates like L-brackets, we can go `params → LBracket() → STEP`. For arbitrary geometry without a parametric model, we'd need actual B-Rep reconstruction from features — a much harder unsolved problem.
+
+### Training Commands (Variable Topology)
+
+```bash
+# VAE (complete)
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/vae_variable
+
+# Edit data generation + Latent Editor (in progress)
+python scripts/generate_variable_edit_data.py \
+    --vae-checkpoint outputs/vae_variable/best_model.pt \
+    --num-samples 50000 --paired \
+    --output data/edit_data_variable && \
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_variable \
+    --latent-dim 32 --direction-weight 0.5 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_variable
+
+# Latent Regressor (parallel training)
+python scripts/train_latent_regressor.py \
+    --vae-checkpoint outputs/vae_variable/best_model.pt \
+    --train-size 10000 --epochs 100 \
+    --output-dir outputs/latent_regressor
+```
 
 ---
 
-## Inference Robustness (Dec 2024 — BKM Training Run)
+## Fixed Topology PoC Summary (Dec 2025) — Complete
 
-End-to-end training with BKM parameters shows **improved but inconsistent** results.
+### Final Results
 
-#### Test Results: "make leg1 20mm longer" (5 samples)
+| Metric | Target | Achieved |
+|--------|--------|----------|
+| VAE Node MSE | < 0.01 | 0.00073 ✓ |
+| Direction Accuracy | > 70% | **80.2%** ✓ |
+| Parameter MAE | — | ~12mm (VAE limit) |
 
-| Original | Edited | Δ leg1 | % of Target | Result |
-|----------|--------|--------|-------------|--------|
-| 154.64 | 155.98 | +1.34 | 7% | ⚠️ Weak |
-| 68.65 | 87.40 | +18.76 | 94% | ✓ Good |
-| 113.45 | 124.89 | +11.45 | 57% | ⚠️ Partial |
-| 135.49 | 142.66 | +7.18 | 36% | ⚠️ Weak |
-| 152.59 | 153.45 | +0.86 | 4% | ⚠️ Weak |
+**Verdict: SUCCESS** — Proved LLMs can edit CAD geometry in latent space.
 
-**leg1 summary**: 5/5 correct direction (improved from 3/8), magnitude 4-94% of target.
+### Key Learnings (Transferable)
 
-#### Test Results: "make leg2 20mm longer" (6 samples)
+1. **Direction Classifier Required**
+   - MSE loss alone → model learns shortcuts (always predict decrease)
+   - Adding BCE direction head → 80.2% accuracy
+   - Use `--direction-weight 0.5` for latent editor training
 
-| Original | Edited | Δ leg2 | Δ leg1 | Result |
-|----------|--------|--------|--------|--------|
-| 65.57 | 65.55 | -0.02 | +9.06 | ❌ Wrong param |
-| 92.92 | 95.53 | +2.61 | +3.87 | ⚠️ Weak |
-| 92.96 | 96.94 | +3.98 | +3.74 | ⚠️ Weak |
-| 165.65 | 164.05 | -1.60 | +1.67 | ❌ Wrong direction |
-| 166.42 | 164.41 | -2.02 | -0.98 | ❌ Wrong direction |
-| 105.90 | 114.34 | +8.45 | +4.16 | ⚠️ Partial (42%) |
+2. **Auxiliary Parameter Loss Helps VAE**
+   - Without: Only 3/16 dimensions active, parameters not encoded
+   - With `--aux-param-weight 0.1`: 8/16 active, strong parameter correlations
 
-**leg2 summary**: 3/6 correct direction, max 42% of target. Model confuses leg1/leg2.
+3. **VAE Bottleneck is Real**
+   - ~12mm MAE is theoretical limit for any predictor on decoded features
+   - Information lost in encode/decode cannot be recovered
 
-#### Key Observations
+4. **Increase/Decrease Asymmetry**
+   - Model better at decrease (96-100%) than increase (37-95%)
+   - Not caused by VAE (latent space is symmetric)
+   - Caused by training dynamics — direction classifier fixes it
 
-1. **Asymmetric performance**: leg1 edits work reliably (5/5 correct direction), leg2 does not (3/6)
-2. **Starting position sensitivity**: Brackets near parameter bounds (leg~150-170mm) show minimal changes—latent space may saturate
-3. **Delta magnitude variance**: LLM produces inconsistent delta magnitudes (0.06-0.87) for identical instructions
-4. **Parameter coupling**: Edits to one leg often affect the other due to entangled latent space
+5. **β and Free-Bits**
+   - β=0.01 optimal (β=0.1 causes variance collapse)
+   - Free-bits=2.0 prevents posterior collapse
 
-#### Architecture Coupling
+### Ablation Results Summary
 
-The LLM and FeatureRegressor are **indirectly coupled** through VAE features:
-
-```
-LLM Training:                          Inference:
-bracket_src → VAE → z_src              z_src → LLM → delta_z
-bracket_tgt → VAE → z_tgt              z_edited = z_src + delta_z
-delta = z_tgt - z_src                  VAE.decode(z_edited) → features
-Train: (z_src, instruction) → delta    FeatureRegressor(features) → params
-                                       LBracket(**params) → STEP
-```
-
-#### Root Causes
-
-1. **Entangled latent space** — leg1/leg2 not well disentangled; dominant "size" direction scales whole bracket
-2. **Non-uniform latent coverage** — LLM deltas work on average but don't generalize to all input regions
-3. **Boundary saturation** — Brackets with parameters near min/max show reduced edit effectiveness
-4. **VAE bottleneck** — ~12mm reconstruction error compounds with edit errors
-
-#### Lessons Learned
-
-- **End-to-end training matters**: Components must be trained together or kept in sync
-- **Robustness testing**: Always test across multiple random inputs, not just one seed
-- **Asymmetric behavior**: Different parameters may have different edit reliability
+| Experiment | Finding |
+|------------|---------|
+| β parameter | 0.01 optimal; 0.1 causes collapse |
+| Latent dim | 16D sufficient; 8D too small, 64D no benefit |
+| GNN vs MLP regressor | MLP equivalent for fixed topology |
+| Contrastive vs Direction | Direction classifier wins (80% vs 65%) |
 
 ---
 
-## Auxiliary Parameter Loss VAE (Dec 2024)
+## Component Reference
 
-### Problem: Latent Space Collapse
-
-Analysis of the original VAE revealed severe latent space collapse:
-- **Effective dimensions**: Only ~3 of 16 dimensions were active
-- **Missing parameters**: Thickness and hole diameters had near-zero correlation with latent space
-- **Entanglement**: leg1/leg2 were highly anti-correlated (-0.80), making them hard to edit independently
-
-### Solution: Auxiliary Parameter Prediction
-
-Added a supervised parameter prediction head during VAE training:
-```
-z → MLP → 8 predicted parameters
-aux_loss = MSE(predicted_params, true_params)
-total_loss = reconstruction_loss + β*KL_loss + λ*aux_loss
-```
-
-### Results: aux-VAE vs Original VAE
-
-| Metric | Original VAE | aux-VAE | Improvement |
-|--------|--------------|---------|-------------|
-| Effective dimensions | ~3 | ~8 | ✓ Full utilization |
-| Thickness correlation | 0.033 | 0.787 | +2300% |
-| Hole1 correlation | 0.048 | 0.673 | +1300% |
-| Hole2 correlation | 0.053 | 0.797 | +1400% |
-| leg1/leg2 entanglement | -0.80 | -0.46 | Better separation |
-| Node MSE | 0.0116 | 0.00073 | 93.7% lower |
-
-**Checkpoint**: `outputs/vae_aux/best_model.pt`
-
----
-
-## Latent Editor Retraining (Dec 2024)
-
-### Training Runs with aux-VAE
-
-Retrained the latent editor with the improved aux-VAE latent space:
-
-| Run | Epochs | LR | Final Val MSE | Final Val MAE |
-|-----|--------|-----|---------------|---------------|
-| Baseline | 10 | 2e-4 | 0.00585 | 0.0446 |
-| Extended | 20 | 2e-4 | 0.00558 | 0.0434 |
-| Lower LR | 20 | 1e-4 | 0.00552 | 0.0433 |
-
-Note: Higher MSE/MAE than original model (0.0037/0.029) because aux-VAE latent space has 8 effective dimensions vs 3, making delta prediction harder.
-
-### End-to-End Evaluation (2000 trials)
-
-| Parameter | Correct Direction | Increase Correct | Decrease Correct |
-|-----------|-------------------|------------------|------------------|
-| leg1 | 52.0% | 27.5% | 76.5% |
-| leg2 | 52.0% | 8.5% | 95.5% |
-| width | 60.0% | 74.0% | 46.0% |
-| thickness | 52.0% | 100% | 4.0% |
-| hole1 | 49.0% | 8.7% | 89.3% |
-| hole2 | 51.3% | 28.0% | 74.7% |
-
-### Critical Finding: Directional Bias
-
-The model learned a **shortcut** instead of understanding instructions:
-- For leg1/leg2/holes: Always predicts "decrease" direction
-- For thickness/width: Always predicts "increase" direction
-- Achieves ~52% accuracy by ignoring instruction direction entirely
-
-### Diagnosis: Data is Clean, Model Takes Shortcut
-
-Analyzed training data for bias:
-```
-Cosine(increase_delta, decrease_delta) per parameter:
-  leg1: -0.997 ✓ (nearly opposite, as expected)
-  leg2: -0.996 ✓
-  thickness: -0.997 ✓
-  holes: -0.999 to -1.000 ✓
-```
-
-**Conclusion**: Training data has clean, symmetric increase/decrease deltas. The MSE loss allows the model to minimize error by predicting a fixed direction per parameter rather than parsing the instruction.
-
----
-
-## Shortcut Problem Solutions (In Progress — Dec 2024)
-
-Two approaches are being tested in parallel to fix the directional bias shortcut:
-
-### Approach 1: Contrastive Learning
-
-Force the model to distinguish increase vs decrease by training on paired samples:
+### VariableLBracket
 
 ```python
-# For same source bracket:
-delta_inc = model(z_src, "make leg1 longer")
-delta_dec = model(z_src, "make leg1 shorter")
-
-# Contrastive loss: should be opposite directions
-contrastive_loss = cosine_similarity(delta_inc, delta_dec) + 1  # minimize when cos = -1
-
-# Total loss
-loss = mse_loss + λ * contrastive_loss
+VariableLBracket(
+    leg1_length, leg2_length, width, thickness,  # Core params
+    fillet_radius=0.0,          # 0 = no fillet
+    hole1_diameters=(6, 8),     # 0-2 holes per leg
+    hole1_distances=(20, 60),
+    hole2_diameters=(6,),
+    hole2_distances=(30,),
+)
 ```
 
-**Implementation:**
-1. **Data generation**: `--paired` flag generates matched increase/decrease samples
-2. **Dataset**: `PairedLatentEditDataset` holds paired samples
-3. **Training**: `train_epoch_paired` does two forward passes per sample
-4. **Loss**: Combines MSE for accuracy + contrastive for direction
+Topology: 6-15 faces depending on holes/fillet.
 
-**Training Command:**
-```bash
-python scripts/train_latent_editor.py \
-    --data-dir data/edit_data_paired \
-    --contrastive-weight 0.5 \
-    --epochs 20 \
-    --output-dir outputs/latent_editor_contrastive
-```
+### Face Types
 
-**Key Metrics:**
-- `mean_cos_sim`: Should decrease toward -1.0 (opposite deltas for opposite instructions)
-- Target: < -0.5
+| Code | Type | Detection |
+|------|------|-----------|
+| 0 | PLANAR | Flat faces |
+| 1 | HOLE | Cylinder with arc ≥ 180° |
+| 2 | FILLET | Cylinder with arc < 180°, or torus |
 
-**Initial Results (weight=0.5) — DIVERGED:**
+### VariableGraphVAE
 
-| Epoch | Loss | Delta MSE | CosSim |
-|-------|------|-----------|--------|
-| 8 | 0.271 | 0.0129 | -0.484 |
-| 12 | 0.297 | 0.0115 | -0.429 |
+- **Encoder**: GNN with face type embeddings, attention pooling
+- **Latent**: 32D
+- **Decoder**: MLP → node features + edge features + masks + face type logits
 
-- CosSim moved wrong direction (toward 0, less opposite)
-- ~95% of loss from contrastive component — **weight too high**
-- Training unstable due to gradient conflict between MSE and contrastive objectives
+### Latent Regressor
 
-**Fix: Lower contrastive weight to 0.1:**
-```bash
-python scripts/train_latent_editor.py \
-    --data-dir data/edit_data_paired \
-    --contrastive-weight 0.1 \
-    --epochs 20 \
-    --output-dir outputs/latent_editor_contrastive_w0.1
-```
-
-At weight=0.1, contrastive loss should be ~50% of total instead of ~95%, giving MSE room to guide delta magnitudes while contrastive guides direction.
+- **Input**: z (32D)
+- **Architecture**: MLP (32 → 256 → 128 → 64 → 4)
+- **Output**: Normalized [leg1, leg2, width, thickness]
 
 ---
 
-### Approach 2: Auxiliary Direction Classifier
+## Scripts Reference
 
-Add a classification head that explicitly predicts increase vs decrease direction, forcing the model to encode direction information in its hidden state.
-
-```python
-# Architecture addition:
-hidden_state → DirectionClassifier (MLP: 4096→256→64→1) → direction_logit
-
-# Loss:
-direction_loss = BCE(direction_logit, direction_target)  # 1.0=increase, 0.0=decrease
-total_loss = delta_weight * MSE + direction_weight * direction_loss
-```
-
-**Implementation:**
-1. **`DirectionClassifier`** in `latent_editor.py`: Small MLP (4096→256→64→1) predicting binary direction
-2. **`direction_loss()`** in `edit_trainer.py`: BCE loss + accuracy tracking
-3. **`train_epoch_with_direction()`**: Training loop with direction supervision
-4. **Dataset**: Direction labels derived from sign of param_deltas (1.0=increase, 0.0=decrease)
-
-**Key Difference from Contrastive:**
-- **Contrastive**: 2 forward passes per batch (paired samples), cosine similarity loss
-- **Direction Classifier**: 1 forward pass per batch, BCE classification loss (faster, uses existing data)
-
-**Training Command:**
-```bash
-python scripts/train_latent_editor.py \
-    --data-dir data/edit_data \
-    --direction-weight 0.5 \
-    --epochs 20 \
-    --output-dir outputs/latent_editor_direction
-```
-
-**Key Metrics:**
-- `direction_accuracy`: Should increase toward 90%+ (model correctly classifies increase vs decrease)
-- `direction_loss`: Should decrease
-
-**Early Results (3 epochs) — STABLE:**
-
-| Epoch | Dir Acc | Delta MSE | Val Loss |
-|-------|---------|-----------|----------|
-| 1 | 41.8% | 0.0150 | 0.365 |
-| 2 | 67.9% | 0.0102 | 0.211 |
-| 3 | 67.3% | 0.0090 | 0.209 |
-
-- Direction accuracy jumped from near-random (42%) to 68% in 2 epochs
-- Delta MSE improving alongside direction accuracy (no trade-off)
-- Train/val tracking together — no overfitting
-- Stable convergence — no divergence issues
-
-**Status**: On track to meet 70% direction accuracy target.
-
----
-
-### Parallel Testing Results (Dec 2025)
-
-Both approaches trained for 20 epochs on separate RunPods.
-
-**Head-to-Head Comparison:**
-
-| Metric | Direction Classifier | Contrastive (w=0.1) |
-|--------|---------------------|---------------------|
-| **Overall Accuracy** | **80.2%** ✓ | 64.5% |
-| Final Delta MSE | 0.0058 | 0.0059 |
-| Final CosSim | N/A | -0.537 ✓ |
-| Training Speed | Faster (1 fwd pass) | Slower (2 fwd passes) |
-
-**End-to-End by Parameter:**
-
-| Parameter | Direction | Contrastive | Winner |
-|-----------|-----------|-------------|--------|
-| leg1_length | 69.8% | 58.0% | Direction |
-| leg2_length | 67.0% | 50.2% | Direction |
-| width | 88.7% | 65.3% | Direction |
-| thickness | 97.3% | 93.3% | Direction |
-| hole1_diameter | 81.3% | 67.3% | Direction |
-| hole2_diameter | 85.3% | 59.3% | Direction |
-
-**Asymmetry Analysis:**
-
-| Approach | Increase Accuracy | Decrease Accuracy |
-|----------|-------------------|-------------------|
-| Direction | 37-95% | 96-100% |
-| Contrastive | 51-87% | 25-99% |
-
-**Key Finding:** Contrastive achieved opposite deltas (CosSim = -0.537) but this didn't translate to better end-to-end accuracy. The explicit BCE classification signal in the direction classifier provides a stronger learning signal than the contrastive similarity objective.
-
-**Conclusion:** Direction classifier is the recommended approach for this problem.
+| Script | Purpose |
+|--------|---------|
+| `train_variable_vae.py` | Train variable topology VAE |
+| `evaluate_variable_vae.py` | Analyze latent space (collapse, correlations, clustering) |
+| `generate_variable_edit_data.py` | Generate paired edit data for latent editor |
+| `train_latent_editor.py` | Train LLM latent editor with direction classifier |
+| `train_latent_regressor.py` | Train z → params MLP (bypasses decoder) |
+| `train_variable_feature_regressor.py` | Train decoded features → params MLP |
 
 ---
 
 ## Model Checkpoints
 
-**Current best checkpoints:**
-- `outputs/vae_aux/best_model.pt` — VAE with auxiliary parameter loss (16D, β=0.01)
-- `outputs/latent_editor_direction/best_model.pt` — LLM Latent Editor with direction classifier (80.2% accuracy)
-- `outputs/feature_regressor_aux/best_model.pt` — FeatureRegressor
+**Current (Variable Topology):**
+- `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D)
+- `outputs/latent_editor_variable/` — In progress
+- `outputs/latent_regressor/` — In progress
 
-**Alternative/experimental checkpoints:**
-- `outputs/latent_editor_contrastive_w0.1/best_model.pt` — Contrastive learning approach (64.5% accuracy)
-- `outputs/latent_editor_aux_ep20_lr1e4/best_model.pt` — Pre-direction classifier baseline
-
-**Legacy checkpoints:**
-- `outputs/vae_16d_lowbeta/best_model.pt` — Original VAE (collapsed latent space)
-- `outputs/latent_editor_vae16d_lowbeta/best_model.pt` — Original LLM Latent Editor
-
-## Training Commands
-
-```bash
-# VAE with auxiliary parameter loss (recommended)
-python scripts/train_vae.py \
-    --epochs 100 --latent-dim 16 --target-beta 0.01 --free-bits 2.0 \
-    --aux-param-weight 0.1 \
-    --output-dir outputs/vae_aux
-
-# FeatureRegressor (cloud GPU recommended)
-python scripts/train_feature_regressor.py \
-    --vae-checkpoint outputs/vae_aux/best_model.pt \
-    --cache-dir data/feature_regressor_cache \
-    --train-size 10000 --epochs 100
-
-# Latent Editor data generation - PAIRED for contrastive learning
-python scripts/generate_edit_data.py \
-    --paired \
-    --vae-checkpoint outputs/vae_aux/best_model.pt \
-    --num-samples 50000 --output data/edit_data_paired
-
-# Latent Editor training WITH contrastive loss (cloud GPU, A40 recommended)
-# NOTE: weight=0.5 diverged; use 0.1 instead
-python scripts/train_latent_editor.py \
-    --data-dir data/edit_data_paired \
-    --contrastive-weight 0.1 \
-    --epochs 20 \
-    --batch-size 8 --gradient-accumulation 4 \
-    --output-dir outputs/latent_editor_contrastive
-
-# Latent Editor training WITH direction classifier (alternative to contrastive)
-python scripts/train_latent_editor.py \
-    --data-dir data/edit_data \
-    --direction-weight 0.5 \
-    --epochs 20 \
-    --batch-size 8 --gradient-accumulation 4 \
-    --output-dir outputs/latent_editor_direction
-```
-
-## Inference
-
-```bash
-# Full pipeline
-python scripts/infer_latent_editor.py \
-    --random-bracket \
-    --instruction "make leg1 20mm longer" \
-    --regressor-checkpoint outputs/feature_regressor/best_model.pt \
-    --output outputs/inference/edited.step
-
-# VAE-only mode (testing without LLM)
-python scripts/infer_latent_editor.py \
-    --random-bracket --vae-only --verbose
-```
-
-## Component Summary
-
-### Graph VAE
-- **Encoder**: 3× GAT layers (4 heads, 64 hidden) + global mean pooling
-- **Latent**: 16D with free-bits constraint (prevents posterior collapse)
-- **Decoder**: MLP producing 124 graph features
-- **Performance**: Node MSE ~0.001, Edge MSE ~0.001
-
-### FeatureRegressor
-- **Input**: Flattened VAE-decoded features (124D)
-- **Architecture**: MLP (124 → 256 → 128 → 64 → 8)
-- **Output**: 8 L-bracket parameters
-- **Performance**: ~12mm overall MAE (at VAE's theoretical limit)
-
-### LLM Latent Editor
-- **Base model**: Mistral 7B with QLoRA (4-bit)
-- **Input**: Latent token (16D → 4096D) + text instruction
-- **Output**: Delta prediction (residual editing)
-- **Performance**: Delta MSE 0.0037, Delta MAE 0.029 (~2.9% error per latent dimension)
-
-## MVP Expansion Path
-
-When extending beyond L-brackets:
-
-1. **Variable Topology**: GNN encoder with attention pooling → fixed latent
-2. **Multiple Part Families**: Universal autoencoder trained on mixed dataset
-3. **Real CAD Data**: Preprocessing pipeline for ABC Dataset, Fusion 360 Gallery
-4. **Complex Features**: Richer node/edge features (fillets, chamfers, curves)
-
-**Key insight**: The LLM can reason over entangled latent spaces. Perfect disentanglement is not required—the editor learns the semantics during training.
-
-## PoC Success Criteria (Updated — Dec 2025)
-
-### Component Metrics (aux-VAE)
-
-| Metric | Target | Achieved | Status |
-|--------|--------|----------|--------|
-| VAE Node MSE | < 0.01 | 0.00073 | ✓ |
-| VAE Effective Dims | > 50% | 100% (8/8 params encoded) | ✓ |
-| LLM Delta MSE | < 0.01 | 0.006 | ✓ |
-| LLM Delta MAE | — | 0.045 | — |
-
-### End-to-End Metrics — Direction Classifier Results (Dec 2025)
-
-**Overall: 52% → 80.2% (+28 pp improvement)** ✓
-
-| Parameter | Overall | Increase | Decrease |
-|-----------|---------|----------|----------|
-| leg1_length | 69.8% | 40.5% | 99.0% |
-| leg2_length | 67.0% | 37.5% | 96.5% |
-| width | 88.7% | 79.3% | 98.0% |
-| thickness | **97.3%** | 94.7% | 100.0% |
-| hole1_diameter | 81.3% | 62.7% | 100.0% |
-| hole2_diameter | 85.3% | 70.7% | 100.0% |
-
-**Key findings:**
-- Direction classifier broke the shortcut problem
-- Decrease operations near-perfect (96-100%)
-- Increase operations improved but still weaker (37-95%)
-- leg1/leg2 hardest due to latent entanglement
-- thickness/width/holes easiest to edit correctly
-
-### Remaining Limitations
-
-1. **Increase/decrease asymmetry**: Model still better at decreasing than increasing parameters
-2. **Magnitude accuracy**: 20mm targets typically produce 2-10mm actual changes (VAE bottleneck)
-3. **leg1/leg2 entanglement**: These parameters remain hardest to edit independently
-4. **Boundary saturation**: Parameters near min/max show reduced edit effectiveness
+**Legacy (Fixed Topology):**
+- `outputs/vae_aux/best_model.pt` — Fixed topology VAE with aux loss (16D)
+- `outputs/latent_editor_direction/best_model.pt` — 80.2% accuracy
+- `outputs/feature_regressor_aux/best_model.pt` — ~12mm MAE
 
 ---
-
-## PoC Assessment (Dec 2025)
-
-### Verdict: SUCCESS
-
-The core hypothesis was validated:
-- LLMs CAN learn to edit CAD geometry in latent space
-- Natural language instructions CAN be translated to meaningful geometric changes
-- Full pipeline functional: STEP → Graph → Latent → Edit → Parameters → STEP
-
-**80.2% direction accuracy** on a fixed-topology part family demonstrates the approach is viable. The remaining limitations are engineering problems, not fundamental blockers.
-
-### What Was Proven
-
-1. **Graph representation works**: Face-adjacency graphs capture sufficient geometric information
-2. **VAE compression works**: 124D → 16D with full parameter recovery
-3. **LLM latent editing works**: Mistral 7B learns to produce meaningful delta vectors
-4. **Direction classification works**: Auxiliary BCE head breaks shortcut learning
-
-### Magnitude Analysis (Dec 2025)
-
-Analysis of 2000 trials revealed the model learned a **fixed edit magnitude prior** rather than scaling to instruction size.
-
-**Overall statistics:**
-
-| Metric | Value |
-|--------|-------|
-| Mean instruction magnitude | 13.4mm |
-| Mean target param change | 7.0mm (52% of instruction) |
-| Mean sum of all \|changes\| | 18.7mm |
-| Mean spillover to other params | 11.8mm |
-
-**Scaling behavior by instruction magnitude:**
-
-| Instruction | Target % | Sum % | Behavior |
-|-------------|----------|-------|----------|
-| 1-3mm (holes/thickness) | 37-44% | 600-800% | Small edits amplified |
-| 10-20mm (width/legs) | 33-53% | 73-124% | Moderate match |
-| 30-50mm (legs) | 55-68% | 90-114% | Sum ≈ instruction ✓ |
-
-**Key insight:** The model produces ~15-20mm total change regardless of instruction:
-- Small requests (1-3mm) get **amplified** to ~8-18mm total
-- Large requests (50mm) get **compressed** to ~45mm total
-
-**By direction:**
-
-| Direction | Accuracy | Avg Target Change | Avg Sum Change |
-|-----------|----------|-------------------|----------------|
-| Decrease | 98.8% | 8.7mm | 23.2mm |
-| Increase | 61.7% | 5.2mm | 14.3mm |
-
-**Root cause:** Model learned a "typical edit size" prior during training rather than precisely following instruction magnitudes. This is a learned bias issue, not purely latent space entanglement.
-
-**Analysis script:** `scripts/analyze_magnitude_spread.py`
-
-### Boundary Analysis (Dec 2025)
-
-Investigated whether failures occur because parameters near boundaries can't increase/decrease further.
-
-**Hypothesis:** Failures happen when (high value + increase) or (low value + decrease) — geometric limits.
-
-**Results:**
-
-| Category | Failures | % of all failures |
-|----------|----------|-------------------|
-| Boundary-related | 89 | 22.5% |
-| **Non-boundary** | **306** | **77.5%** |
-
-**Failure rate by parameter region:**
-
-| Region | Increase | Decrease |
-|--------|----------|----------|
-| Low (0-25%) | 33.3% | 1.9% |
-| Mid-low (25-50%) | 37.1% | 1.7% |
-| Mid-high (50-75%) | 40.9% | 1.1% |
-| High (75-100%) | 41.7% | 0.0% |
-
-**Key finding:** Increase fails at 35-42% **across all regions**, not just at boundaries. 97.4% of non-boundary failures are increase operations.
-
-**Conclusion:** The asymmetry is NOT geometric constraints. The model fails at increase *everywhere*, suggesting:
-1. VAE latent space makes "increase" directions harder to navigate
-2. LLM learned that decrease is "safer" and defaults to it when uncertain
-3. Training dynamics favor decrease convergence
-
-Symmetric normalization alone won't fix this — the fix needs to address how the LLM learns increase vs decrease directions.
-
-### VAE Latent Space Symmetry Analysis (Dec 2025)
-
-Investigated whether the VAE encodes increase/decrease directions asymmetrically — could the VAE structure explain the increase bias?
-
-**Method:** For each parameter and magnitude, generated 200 triplets (base, decreased, increased) and measured latent deltas.
-
-**Results:**
-
-| Metric | Finding | Implication |
-|--------|---------|-------------|
-| **Inc/Dec Cosine** | -0.86 to -0.99 | Near-perfect opposites |
-| **Variance Ratio** | Decrease ~10-20% higher | Opposite of expected |
-| **Alignment** | 0.87-0.99 for both | Equally consistent |
-| **Magnitude** | Decrease ~10-20% larger deltas | Dec direction more pronounced |
-
-**By parameter (50mm edits for legs, max magnitude for others):**
-
-| Parameter | Inc/Dec Cosine | Var Ratio (dec/inc) | Dec Magnitude | Inc Magnitude |
-|-----------|----------------|---------------------|---------------|---------------|
-| leg1_length | -0.895 | 1.47 | 1.12 | 0.91 |
-| leg2_length | -0.865 | 1.15 | 1.05 | 0.89 |
-| width | -0.942 | 1.21 | 1.02 | 0.84 |
-| thickness | -0.946 | 1.00 | 0.77 | 0.70 |
-| hole1_diameter | -0.983 | 0.87 | 0.53 | 0.48 |
-| hole2_diameter | -0.979 | 1.44 | 0.48 | 0.36 |
-
-**Key findings:**
-
-1. **VAE is NOT asymmetric** — Inc/dec cosines near -1.0 mean increase and decrease are encoded as nearly perfect mirror directions in latent space.
-
-2. **Decrease has MORE variance** — This is the opposite of what we'd expect if variance caused poor increase performance. The model does BETTER on the direction with MORE variance.
-
-3. **Decrease produces larger latent deltas** — Decrease operations create ~10-20% larger movements in latent space, which may make them easier to learn.
-
-**Conclusion:** The VAE latent space structure is NOT the root cause of the increase/decrease asymmetry. The problem is in latent editor training dynamics:
-- MSE loss allows taking shortcuts
-- Training optimization finds "always decrease" shortcut first
-- Without explicit direction supervision, model doesn't recover
-
-The direction classifier fix worked because it forced explicit direction encoding, not because it fixed a VAE problem.
-
-**Analysis script:** `scripts/analyze_vae_asymmetry.py`
-
-### Open Questions for Generalization
-
-| Question | Priority | Notes |
-|----------|----------|-------|
-| Magnitude scaling | High | Model compresses large edits, amplifies small ones |
-| Increase asymmetry | Medium | Decrease produces 2x larger changes than increase |
-| Failure analysis | Medium | What causes the 20% errors? |
-| Instruction robustness | Medium | Varied phrasings, compound instructions |
-| Spillover reduction | Medium | 11.8mm average leaks to non-target params |
-
-### Recommended Next Steps
-
-**Before generalizing to variable topology:**
-
-1. **Magnitude calibration** — Quick win, high impact
-   - Analyze delta magnitudes vs parameter changes
-   - Consider magnitude prediction head or inference-time scaling
-
-2. **Failure analysis** — Understand the 20%
-   - Cluster failed samples by bracket region, instruction type
-   - Identify systematic vs random failures
-
-3. **Instruction robustness** — Needed for real use
-   - Test synonyms: "extend", "lengthen", "grow" vs "make longer"
-   - Test compound: "make leg1 longer and hole2 smaller"
-
-**For generalization:**
-
-1. **Variable topology**: GNN encoder with attention pooling → fixed latent
-2. **Multiple part families**: Mixed dataset training
-3. **Richer features**: Fillets, chamfers, curved surfaces
-4. **Multi-step edits**: Sequential instruction handling
 
 ## Technical Stack
 
@@ -759,252 +280,9 @@ The direction classifier fix worked because it forced explicit direction encodin
 
 ---
 
-## Next Step: Variable Topology (Phase 2)
+## Next Steps
 
-### PoC Conclusion
-
-The fixed-topology L-bracket PoC is **complete**. Key outcomes:
-
-- **80.2% direction accuracy** proves LLMs can edit CAD in latent space
-- **Direction classifier** solves the shortcut problem (transferable technique)
-- **Remaining issues** (magnitude scaling, increase asymmetry) are training dynamics problems with known causes — NOT fundamental blockers
-- **VAE latent space is symmetric** — no architectural changes needed there
-
-**Do NOT further optimize the current latent editor** — the VAE will change in the next phase, invalidating any fine-tuning.
-
-### What Changes for Variable Topology
-
-| Component | Current (Fixed) | Next (Variable) |
-|-----------|-----------------|-----------------|
-| **Topology** | Always 10 faces, 22 edges | Variable face/edge count |
-| **VAE Encoder** | Fixed-size input | GNN with attention pooling |
-| **VAE Decoder** | MLP → 124 features | Conditional generation or fixed output + mask |
-| **Latent Space** | 16D, parameter-aligned | Larger dim, topology-aware |
-| **Part Families** | L-brackets only | Multiple families or ABC dataset |
-
-### Transferable Learnings
-
-These techniques/insights apply to the next phase:
-
-1. **Direction classifier** — Use explicit BCE supervision to prevent shortcut learning
-2. **Auxiliary parameter loss** — Helps VAE encode meaningful information in latent space
-3. **Free-bits KL constraint** — Prevents posterior collapse
-4. **Analysis methodology** — Scripts for magnitude spread, boundary analysis, VAE symmetry
-
-### Recommended Approach
-
-1. **Start with VAE changes** — Variable topology encoder/decoder is the foundation
-2. **Keep latent editor architecture** — Mistral 7B + QLoRA + direction classifier
-3. **Regenerate training data** — New VAE means new latent space
-4. **Expect similar issues** — Shortcut learning will likely recur; direction classifier should fix it
-
-### Key Files to Reference
-
-- `scripts/analyze_vae_asymmetry.py` — VAE latent space analysis
-- `scripts/analyze_magnitude_spread.py` — Edit magnitude analysis
-- `graph_cad/training/edit_trainer.py` — Direction classifier implementation
-- `graph_cad/models/latent_editor.py` — DirectionClassifier architecture
-
----
-
-## Implementation Plan: Variable Topology VAE (Option B)
-
-### Status: Implementation Complete (Dec 2025)
-
-**All Phases Complete:**
-- [x] Phase 1: L-Bracket generator with fillets and variable holes
-- [x] Phase 2: Graph extraction with curvature and face type separation
-- [x] Phase 3: VAE encoder with face type embeddings
-- [x] Phase 4: VAE decoder with masks and face type classification
-- [x] Phase 5: Variable topology loss functions
-- [x] Phase 6: Variable topology dataset with padding
-- [x] Phase 7: Training script for variable topology VAE
-- [x] Phase 8: Unit tests (218 tests, all passing)
-
-### Overview
-
-Extend the VAE to handle **variable topology L-brackets** with embedded face types. This tests whether the latent space can encode topological variation (fillets, variable hole counts) while maintaining reconstruction quality.
-
-**Key changes:**
-1. L-bracket generator with optional fillets and 0-2 holes per leg
-2. Expanded face type vocabulary with learned embeddings
-3. Mask-based decoder for variable-size output
-4. Face type classification head in decoder
-
-### New Components
-
-#### VariableLBracket (`graph_cad/data/l_bracket.py`)
-
-```python
-# Topology variation: 6-15 faces
-VariableLBracket(
-    leg1_length, leg2_length, width, thickness,
-    fillet_radius=0.0,          # 0 = no fillet
-    hole1_diameters=(6, 8),     # Tuple of hole sizes
-    hole1_distances=(20, 60),   # Corresponding distances
-    hole2_diameters=(6,),       # Can have different count
-    hole2_distances=(30,),
-)
-```
-
-**Geometry constraints:**
-- Holes must be ≥ 1 diameter from leg end
-- Holes must be ≥ 1 diameter from corner (thickness boundary)
-- **Fillet-hole clearance**: When fillet is present, holes must maintain 2mm minimum wall from fillet edge
-  - Validation: `hole_edge_to_corner ≥ fillet_radius + 2mm`
-  - The `random()` method automatically respects this constraint
-
-#### Graph Extraction (`graph_cad/data/graph_extraction.py`)
-
-**Face types (minimal vocabulary):**
-| Code | Type | Detection | Examples |
-|------|------|-----------|----------|
-| 0 | PLANAR | `GeomAbs_Plane` | Bracket faces |
-| 1 | HOLE | Cylinder with arc ≥ 180° | Through-holes |
-| 2 | FILLET | Cylinder with arc < 180°, or torus | Fillets, chamfers, other curved |
-
-**Design Decision: 180° Arc Threshold**
-
-Holes and fillets are both cylindrical surfaces in OCC, but serve different functions. We distinguish them by arc extent:
-- **Holes**: Full cylinders (360° arc) — detected as arc ≥ 180°
-- **Fillets**: Partial cylinders (90° arc for straight edges) — detected as arc < 180°
-
-| Surface | Typical Arc | Classification |
-|---------|-------------|----------------|
-| Through-hole | 360° | HOLE |
-| Straight-edge fillet | 90° | FILLET |
-| Curved-edge fillet | varies | FILLET (torus) |
-
-**Why 180°?**
-- Current L-bracket data shows clear separation: holes=360°, fillets=90°, gap=270°
-- Simple threshold avoids floating-point precision issues
-- Works across CAD kernels (not OCC-specific logic)
-
-**Known limitations (future edge cases):**
-- Half-cylinders (180° exactly) — currently classified as HOLE
-- Partial holes (counterbores, blind holes with radius) — may misclassify
-- Chamfers on curved edges — will classify as FILLET (correct intent)
-
-**Why only 3 types?**
-- All embeddings receive meaningful gradients during training
-- Unused embeddings (cone, sphere, bspline) would get noisy updates
-- Expand vocabulary only when training data includes those geometries
-
-**Variable topology features:**
-- `extract_graph_from_solid_variable()` — Returns 9D node features + face_types array
-- Node features: [area, dir_xyz, centroid_xyz, curvature1, curvature2]
-- Face types: Separate integer array for embedding lookup
-
-#### VariableGraphVAE (`graph_cad/models/graph_vae.py`)
-
-```python
-config = VariableGraphVAEConfig(
-    node_features=9,      # Continuous features (no face_type)
-    num_face_types=3,     # PLANAR, HOLE, FILLET
-    face_embed_dim=8,     # Embedding dimension
-    max_nodes=20,         # For padding
-    max_edges=50,
-    latent_dim=32,        # Larger than fixed topology
-)
-
-# Encoder: GNN with face type embeddings
-# Decoder outputs:
-#   - node_features: (batch, max_nodes, 9)
-#   - edge_features: (batch, max_edges, 2)
-#   - node_mask_logits: (batch, max_nodes)
-#   - edge_mask_logits: (batch, max_edges)
-#   - face_type_logits: (batch, max_nodes, 8)
-```
-
-#### Loss Functions (`graph_cad/models/losses.py`)
-
-```python
-variable_vae_loss(outputs, targets, beta=0.01, free_bits=2.0)
-# Components:
-#   1. Masked reconstruction loss (only on real nodes/edges)
-#   2. KL divergence
-#   3. Node/edge existence BCE
-#   4. Face type cross-entropy
-```
-
-### Training Commands (Variable Topology)
-
-```bash
-# Train variable topology VAE
-python scripts/train_vae.py \
-    --variable-topology \
-    --epochs 100 \
-    --latent-dim 32 \
-    --target-beta 0.01 \
-    --mask-weight 1.0 \
-    --face-type-weight 0.5 \
-    --max-nodes 20 \
-    --max-edges 50 \
-    --output-dir outputs/vae_variable
-```
-
-### Success Criteria
-
-| Metric | Target | Notes |
-|--------|--------|-------|
-| Node MSE (masked) | < 0.002 | Reconstruction on existing nodes |
-| Node mask accuracy | > 95% | Predict which nodes exist |
-| Edge mask accuracy | > 95% | Predict which edges exist |
-| Face type accuracy | > 90% | Classification |
-| Latent clustering | Visible | Similar topologies cluster |
-
-### Files Modified/Created
-
-| File | Changes |
-|------|---------|
-| `graph_cad/data/l_bracket.py` | Added `VariableLBracket`, `VariableLBracketRanges` |
-| `graph_cad/data/graph_extraction.py` | Added curvature extraction, expanded face types, `extract_graph_from_solid_variable()` |
-| `graph_cad/models/graph_vae.py` | Added `VariableGraphVAEConfig`, `VariableGraphVAEEncoder`, `VariableGraphVAEDecoder`, `VariableGraphVAE` |
-| `graph_cad/models/losses.py` | Added `VariableVAELossConfig`, `variable_vae_loss()`, mask/face_type losses |
-| `graph_cad/data/dataset.py` | Added `VariableLBracketDataset`, `create_variable_data_loaders()`, `collate_variable_batch()` |
-| `scripts/train_variable_vae.py` | Training script with masked loss, face type classification, latent metrics |
-
-### Unit Tests Added
-
-| Test File | Coverage | Tests |
-|-----------|----------|-------|
-| `tests/unit/test_l_bracket.py` | VariableLBracket | 28 tests (validation incl. fillet-hole clearance, properties, serialization, geometry) |
-| `tests/unit/test_graph_extraction.py` | Variable extraction | 16 tests (face count, curvature, face types) |
-| `tests/unit/test_graph_vae.py` | VariableGraphVAE | 20 tests (encoder, decoder, gradient flow) |
-| `tests/unit/test_losses.py` | Variable losses | 11 tests (reconstruction, masks, face type) |
-| `tests/unit/test_dataset.py` | VariableLBracketDataset | 18 tests (padding, masks, data loaders) |
-
-**Total: 220 tests passing** (95 new tests for variable topology)
-
-### Ready for Training
-
-The variable topology VAE implementation is complete and tested. To train:
-
-```bash
-# Quick smoke test (2 minutes)
-python scripts/train_variable_vae.py \
-    --train-size 50 --val-size 20 --test-size 20 \
-    --epochs 2 --batch-size 8 \
-    --output-dir outputs/vae_variable_test
-
-# Full training (cloud GPU recommended)
-python scripts/train_variable_vae.py \
-    --train-size 5000 --val-size 500 --test-size 500 \
-    --epochs 100 \
-    --latent-dim 32 \
-    --target-beta 0.01 \
-    --aux-param-weight 0.1 \
-    --output-dir outputs/vae_variable
-```
-
-**Smoke test results (2 epochs, 50 samples):**
-- Node mask accuracy: 72.5% → 87.3%
-- Face type accuracy: 33.7% → 66.1%
-- Training stable, losses decreasing
-
-### Next Steps After Training
-
-1. **Validate reconstruction quality** — Check if variable topologies reconstruct accurately
-2. **Analyze latent space** — Do topologies cluster? Is there smooth interpolation?
-3. **Retrain latent editor** — Generate new edit data with variable VAE, retrain LLM
-4. **End-to-end evaluation** — Test full pipeline on variable topology brackets
+1. **Complete latent editor training** with variable topology VAE
+2. **Train latent regressor** (z → params directly)
+3. **End-to-end evaluation** on variable topology brackets
+4. **If successful**: Expand to more complex geometry / multiple part families

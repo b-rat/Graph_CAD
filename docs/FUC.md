@@ -289,3 +289,41 @@ python scripts/train_variable_vae.py \
     --latent-dim 32 \
     --output-dir outputs/vae_variable
 ```
+
+```bash
+python scripts/generate_variable_edit_data.py \
+    --vae-checkpoint outputs/vae_variable/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data_variable \
+    --paired \
+    --device cuda && \
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_variable \
+    --latent-dim 32 \
+    --direction-weight 0.5 \
+    --epochs 20 \
+    --batch-size 8 \
+    --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_variable
+```
+
+```bash
+python scripts/train_variable_feature_regressor.py \
+    --vae-checkpoint outputs/vae_variable/best_model.pt \
+    --train-size 10000 \
+    --epochs 100 \
+    --cache-dir data/feature_regressor_variable_cache \
+    --output-dir outputs/feature_regressor_variable \
+    --device cuda
+```
+
+```bash
+# for training a feature regressor directly from latent, skipping decoder
+python scripts/train_latent_regressor.py \
+    --vae-checkpoint outputs/vae_variable/best_model.pt \
+    --train-size 10000 \
+    --epochs 100 \
+    --cache-dir data/latent_regressor_cache \
+    --output-dir outputs/latent_regressor \
+    --device cuda
+```
