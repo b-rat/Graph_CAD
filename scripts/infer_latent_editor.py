@@ -82,6 +82,50 @@ def load_feature_regressor(checkpoint_path: str, device: str):
     return regressor
 
 
+def load_latent_regressor(checkpoint_path: str, device: str):
+    """Load trained LatentRegressor model (predicts params directly from z)."""
+    from dataclasses import dataclass
+    import torch.nn as nn
+
+    @dataclass
+    class LatentRegressorConfig:
+        latent_dim: int = 32
+        hidden_dims: tuple[int, ...] = (256, 128, 64)
+        dropout: float = 0.1
+        use_batch_norm: bool = True
+        num_params: int = 4
+
+    class LatentRegressor(nn.Module):
+        def __init__(self, config: LatentRegressorConfig):
+            super().__init__()
+            self.config = config
+            layers = []
+            in_dim = config.latent_dim
+            for hidden_dim in config.hidden_dims:
+                layers.append(nn.Linear(in_dim, hidden_dim))
+                if config.use_batch_norm:
+                    layers.append(nn.BatchNorm1d(hidden_dim))
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(config.dropout))
+                in_dim = hidden_dim
+            self.backbone = nn.Sequential(*layers)
+            self.output_head = nn.Linear(in_dim, config.num_params)
+
+        def forward(self, z: torch.Tensor) -> torch.Tensor:
+            h = self.backbone(z)
+            return self.output_head(h)
+
+    print(f"Loading LatentRegressor from {checkpoint_path}...")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    config = LatentRegressorConfig(**checkpoint["config"])
+    regressor = LatentRegressor(config)
+    regressor.load_state_dict(checkpoint["model_state_dict"])
+    regressor.to(device)
+    regressor.eval()
+    print(f"  Config: {config.latent_dim}D → {config.hidden_dims} → {config.num_params}D")
+    return regressor, config
+
+
 def load_editor(checkpoint_path: str, config, device: str, force_cpu: bool = False):
     """Load trained Latent Editor model."""
     from graph_cad.models.latent_editor import (
@@ -310,6 +354,12 @@ def main():
         default="outputs/feature_regressor/best_model.pt",
         help="Path to trained FeatureRegressor checkpoint (for parameter prediction)",
     )
+    parser.add_argument(
+        "--latent-regressor-checkpoint",
+        type=str,
+        default=None,
+        help="Path to trained LatentRegressor checkpoint (predicts params directly from z, bypasses decoder)",
+    )
 
     # Output
     parser.add_argument(
@@ -511,19 +561,58 @@ def main():
     print("STEP 6: Predicting Parameters")
     print("=" * 60)
 
-    from graph_cad.models.parameter_regressor import PARAMETER_NAMES, denormalize_parameters
-
-    # Check if FeatureRegressor checkpoint exists
-    regressor_path = Path(args.regressor_checkpoint)
     orig_params_pred = None
     edit_params_pred = None
     predicted_original_bracket = None
     edited_bracket = None
+    param_names = None
+    use_latent_regressor = False
 
-    if regressor_path.exists():
+    # Check for latent regressor first (preferred - bypasses decoder)
+    latent_regressor_path = Path(args.latent_regressor_checkpoint) if args.latent_regressor_checkpoint else None
+    regressor_path = Path(args.regressor_checkpoint)
+
+    if latent_regressor_path and latent_regressor_path.exists():
+        # Use latent regressor (z → params directly)
+        use_latent_regressor = True
+        latent_regressor, latent_reg_config = load_latent_regressor(
+            args.latent_regressor_checkpoint, device
+        )
+        param_names = ["leg1_length", "leg2_length", "width", "thickness"]
+
+        # Denormalize function for variable topology params
+        from graph_cad.data.dataset import VariableLBracketRanges
+        ranges = VariableLBracketRanges()
+
+        def denormalize_latent_params(params_norm):
+            mins = torch.tensor([
+                ranges.leg1_length[0], ranges.leg2_length[0],
+                ranges.width[0], ranges.thickness[0],
+            ], device=params_norm.device)
+            maxs = torch.tensor([
+                ranges.leg1_length[1], ranges.leg2_length[1],
+                ranges.width[1], ranges.thickness[1],
+            ], device=params_norm.device)
+            return params_norm * (maxs - mins) + mins
+
+        # Predict parameters directly from latent vectors
+        with torch.no_grad():
+            orig_params_norm = latent_regressor(z_src)
+            orig_params_pred = denormalize_latent_params(orig_params_norm).cpu().numpy().flatten()
+
+            edit_params_norm = latent_regressor(z_edited)
+            edit_params_pred = denormalize_latent_params(edit_params_norm).cpu().numpy().flatten()
+
+        print("  Using LatentRegressor (z → params, bypasses decoder)")
+
+    elif regressor_path.exists():
+        # Use feature regressor (decode → features → params)
+        from graph_cad.models.parameter_regressor import PARAMETER_NAMES, denormalize_parameters
+        param_names = PARAMETER_NAMES
+
         regressor = load_feature_regressor(args.regressor_checkpoint, device)
 
-        # Predict parameters for both original and edited
+        # Predict parameters from decoded features
         with torch.no_grad():
             # Original
             orig_node_t = torch.tensor(orig_node_recon, dtype=torch.float32, device=device).unsqueeze(0)
@@ -537,11 +626,21 @@ def main():
             edit_params_norm = regressor(edit_node_t, edit_edge_t)
             edit_params_pred = denormalize_parameters(edit_params_norm).cpu().numpy().flatten()
 
+        print("  Using FeatureRegressor (decode → features → params)")
+
+    else:
+        print(f"  No regressor checkpoint found.")
+        print("  Options:")
+        print(f"    --latent-regressor-checkpoint outputs/latent_regressor/best_model.pt")
+        print(f"    --regressor-checkpoint outputs/feature_regressor/best_model.pt")
+
+    # Display results if we have predictions
+    if orig_params_pred is not None:
         print("\n  Predicted Parameters (mm):")
         print("  " + "-" * 55)
         print(f"  {'Parameter':<20} {'Original':>12} {'Edited':>12} {'Change':>10}")
         print("  " + "-" * 55)
-        for i, name in enumerate(PARAMETER_NAMES):
+        for i, name in enumerate(param_names):
             orig_val = orig_params_pred[i]
             edit_val = edit_params_pred[i]
             change = edit_val - orig_val
@@ -552,49 +651,50 @@ def main():
             print("\n  Ground Truth Comparison (Original):")
             print("  " + "-" * 40)
             gt_params = bracket.to_dict()
-            for i, name in enumerate(PARAMETER_NAMES):
-                gt_val = gt_params[name]
-                pred_val = orig_params_pred[i]
-                error = pred_val - gt_val
-                print(f"  {name:<20} GT={gt_val:>8.2f}  Pred={pred_val:>8.2f}  Err={error:>+6.2f}")
+            for i, name in enumerate(param_names):
+                if name in gt_params:
+                    gt_val = gt_params[name]
+                    pred_val = orig_params_pred[i]
+                    error = pred_val - gt_val
+                    print(f"  {name:<20} GT={gt_val:>8.2f}  Pred={pred_val:>8.2f}  Err={error:>+6.2f}")
 
-        # Create predicted original L-bracket from VAE-reconstructed parameters
-        predicted_original_bracket = None
-        try:
-            predicted_original_bracket = LBracket(
-                leg1_length=float(orig_params_pred[0]),
-                leg2_length=float(orig_params_pred[1]),
-                width=float(orig_params_pred[2]),
-                thickness=float(orig_params_pred[3]),
-                hole1_distance=float(orig_params_pred[4]),
-                hole1_diameter=float(orig_params_pred[5]),
-                hole2_distance=float(orig_params_pred[6]),
-                hole2_diameter=float(orig_params_pred[7]),
-            )
-            print("\n  Successfully created predicted original L-bracket geometry!")
-        except ValueError as e:
-            print(f"\n  Warning: Could not create predicted original L-bracket: {e}")
+        # Create L-bracket geometry (only for feature regressor with 8 params)
+        if not use_latent_regressor and len(param_names) == 8:
+            predicted_original_bracket = None
+            try:
+                predicted_original_bracket = LBracket(
+                    leg1_length=float(orig_params_pred[0]),
+                    leg2_length=float(orig_params_pred[1]),
+                    width=float(orig_params_pred[2]),
+                    thickness=float(orig_params_pred[3]),
+                    hole1_distance=float(orig_params_pred[4]),
+                    hole1_diameter=float(orig_params_pred[5]),
+                    hole2_distance=float(orig_params_pred[6]),
+                    hole2_diameter=float(orig_params_pred[7]),
+                )
+                print("\n  Successfully created predicted original L-bracket geometry!")
+            except ValueError as e:
+                print(f"\n  Warning: Could not create predicted original L-bracket: {e}")
 
-        # Create edited L-bracket from predicted parameters
-        try:
-            edited_bracket = LBracket(
-                leg1_length=float(edit_params_pred[0]),
-                leg2_length=float(edit_params_pred[1]),
-                width=float(edit_params_pred[2]),
-                thickness=float(edit_params_pred[3]),
-                hole1_distance=float(edit_params_pred[4]),
-                hole1_diameter=float(edit_params_pred[5]),
-                hole2_distance=float(edit_params_pred[6]),
-                hole2_diameter=float(edit_params_pred[7]),
-            )
-            print("  Successfully created edited L-bracket geometry!")
-        except ValueError as e:
-            print(f"\n  Warning: Could not create valid L-bracket from predicted params: {e}")
-            edited_bracket = None
-    else:
-        print(f"  FeatureRegressor checkpoint not found at {regressor_path}")
-        print("  Skipping parameter prediction. Train with:")
-        print(f"    python scripts/train_feature_regressor.py --vae-checkpoint {args.vae_checkpoint}")
+            try:
+                edited_bracket = LBracket(
+                    leg1_length=float(edit_params_pred[0]),
+                    leg2_length=float(edit_params_pred[1]),
+                    width=float(edit_params_pred[2]),
+                    thickness=float(edit_params_pred[3]),
+                    hole1_distance=float(edit_params_pred[4]),
+                    hole1_diameter=float(edit_params_pred[5]),
+                    hole2_distance=float(edit_params_pred[6]),
+                    hole2_diameter=float(edit_params_pred[7]),
+                )
+                print("  Successfully created edited L-bracket geometry!")
+            except ValueError as e:
+                print(f"\n  Warning: Could not create valid L-bracket from predicted params: {e}")
+                edited_bracket = None
+        elif use_latent_regressor:
+            # Latent regressor only predicts 4 core params - can't generate STEP without hole params
+            print("\n  Note: LatentRegressor predicts 4 core params only (no holes).")
+            print("  STEP file generation requires hole parameters - skipping geometry creation.")
 
     # =========================================================================
     # Step 7: Compare and display results
@@ -622,13 +722,14 @@ def main():
         "delta_z": delta_z.cpu().numpy().tolist(),
         "delta_norm": delta_z.norm().item(),
     }
-    if orig_params_pred is not None:
+    if orig_params_pred is not None and param_names is not None:
         latent_data["original_params"] = {
-            name: float(orig_params_pred[i]) for i, name in enumerate(PARAMETER_NAMES)
+            name: float(orig_params_pred[i]) for i, name in enumerate(param_names)
         }
         latent_data["edited_params"] = {
-            name: float(edit_params_pred[i]) for i, name in enumerate(PARAMETER_NAMES)
+            name: float(edit_params_pred[i]) for i, name in enumerate(param_names)
         }
+        latent_data["regressor_type"] = "latent" if use_latent_regressor else "feature"
     latent_path = output_dir / "latent_vectors.json"
     with open(latent_path, "w") as f:
         json.dump(latent_data, f, indent=2)
@@ -681,7 +782,7 @@ def main():
     edge_mse = np.mean((edit_edge_recon - orig_edge_recon) ** 2)
     print(f"  Graph change: node_MSE={node_mse:.6f}, edge_MSE={edge_mse:.6f}")
 
-    if orig_params_pred is not None and edit_params_pred is not None:
+    if orig_params_pred is not None and edit_params_pred is not None and param_names is not None:
         param_changes = edit_params_pred - orig_params_pred
 
         # Show all parameter changes in logical order
@@ -689,7 +790,7 @@ def main():
         print("  " + "-" * 50)
         print(f"  {'Parameter':<20} {'Original':>10} {'Edited':>10} {'Δ':>10}")
         print("  " + "-" * 50)
-        for i, name in enumerate(PARAMETER_NAMES):
+        for i, name in enumerate(param_names):
             print(f"  {name:<20} {orig_params_pred[i]:>10.2f} {edit_params_pred[i]:>10.2f} {param_changes[i]:>+10.2f}")
 
 
