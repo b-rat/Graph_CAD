@@ -60,8 +60,8 @@ Input STEP → Graph Extraction → VAE Encode → Latent (32D)
 
 2. **Phase 2 (In Progress)**: Variable Topology
    - L-brackets with 0-4 holes, optional fillets, 6-15 faces
-   - 32D latent, 4 core parameters
-   - VAE trained, latent editor training in progress
+   - 32D latent, 4 core parameters + fillet + holes
+   - VAE trained ✓, Full Latent Regressor trained ✓, Latent Editor 64% (tuning)
 
 ---
 
@@ -136,9 +136,35 @@ z (32D) → MLP backbone → Multi-head output:
 - Predicts ALL variable topology parameters
 - Existence heads handle variable hole counts (0-4 holes)
 - Masked loss: param loss only where features exist
-- Smoke test: 100% fillet acc, 95%+ hole acc after 2 epochs
+
+**Full Latent Regressor — Training Complete ✓**
+
+| Metric | Test Value | Interpretation |
+|--------|------------|----------------|
+| Existence Accuracy | 100% | Perfect fillet/hole detection |
+| Core Params RMSE | 20.8% (~18mm) | Moderate |
+| Fillet Radius RMSE | 17.2% (1.4mm) | Good |
+| Hole Params RMSE | 30-33% | Room to improve |
+
+**Limitation:** Fillet radius predictions collapse to mean (~3.2mm). VAE latent doesn't encode fillet size well.
 
 **Conceptual Note:** For parametric templates like L-brackets, we go `params → VariableLBracket() → STEP`. For arbitrary geometry, B-Rep reconstruction from features would be needed — a harder unsolved problem.
+
+### Latent Editor — Training In Progress
+
+**Results with direction_weight=0.5:**
+
+| Metric | Fixed (16D) | Variable (32D) |
+|--------|-------------|----------------|
+| Direction Accuracy | **80.2%** | 64.3% |
+| Delta MSE | 0.0058 | 0.000004 |
+
+**Analysis:**
+- Very low delta MSE suggests model produces tiny deltas to minimize loss
+- Direction accuracy lower than fixed topology (64% vs 80%)
+- Larger latent space (32D) may need stronger direction supervision
+
+**Next:** Retrain with `--direction-weight 1.0` to prioritize direction accuracy over MSE.
 
 ### Training Commands (Variable Topology)
 
@@ -149,15 +175,16 @@ python scripts/train_variable_vae.py \
     --epochs 100 --latent-dim 32 \
     --output-dir outputs/vae_variable
 
-# Edit data generation + Latent Editor
-# Note: --paired is for contrastive learning; direction classifier doesn't need it
+# Edit data generation (one-time)
 python scripts/generate_variable_edit_data.py \
     --vae-checkpoint outputs/vae_variable/best_model.pt \
     --num-samples 50000 \
-    --output data/edit_data_variable && \
+    --output data/edit_data_variable
+
+# Latent Editor training (try direction-weight 1.0 for better direction acc)
 python scripts/train_latent_editor.py \
     --data-dir data/edit_data_variable \
-    --latent-dim 32 --direction-weight 0.5 \
+    --latent-dim 32 --direction-weight 1.0 \
     --epochs 20 --batch-size 8 --gradient-accumulation 4 \
     --output-dir outputs/latent_editor_variable
 
@@ -310,9 +337,9 @@ python scripts/infer_latent_editor.py \
 ## Model Checkpoints
 
 **Current (Variable Topology):**
-- `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D)
-- `outputs/latent_editor_variable/` — In progress
-- `outputs/full_latent_regressor/` — Multi-head regressor (all params)
+- `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D) ✓
+- `outputs/full_latent_regressor/best_model.pt` — Multi-head regressor, 100% exist acc ✓
+- `outputs/latent_editor_variable/best_model.pt` — 64% direction acc (tuning)
 - `outputs/latent_regressor/` — Simple regressor (4 core params)
 
 **Legacy (Fixed Topology):**
@@ -334,7 +361,7 @@ python scripts/infer_latent_editor.py \
 
 ## Next Steps
 
-1. **Complete latent editor training** with variable topology VAE
-2. **Train latent regressor** (z → params directly)
-3. **End-to-end evaluation** on variable topology brackets
-4. **If successful**: Expand to more complex geometry / multiple part families
+1. **Tune latent editor** — Retrain with `--direction-weight 1.0` (or 2.0) to improve direction accuracy
+2. **End-to-end evaluation** — Test full pipeline: instruction → edited STEP file
+3. **If direction acc reaches ~75%+**: Ready for demo / expansion
+4. **Future**: More complex geometry / multiple part families
