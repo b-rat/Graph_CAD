@@ -109,24 +109,36 @@ Input STEP → Graph Extraction → VAE Encode → Latent (32D)
 
 ### Parameter Prediction Approaches
 
-Two architectures tested for predicting L-bracket parameters:
+Three architectures for predicting L-bracket parameters from latent z:
 
 **1. Feature Regressor (via decoded features):**
 ```
-z → VAE.decode() → features (280D) → MLP → params
+z → VAE.decode() → features (280D) → MLP → 4 params
 ```
 - Test MAE: 21.84mm (poor)
-- leg1/leg2: ~37mm MAE (near random)
 - Compounds decoder reconstruction error
 
-**2. Latent Regressor (direct from z) — Recommended:**
+**2. Simple Latent Regressor (4 core params only):**
 ```
-z (32D) → MLP → params (4D)
+z (32D) → MLP → 4 params (leg1, leg2, width, thickness)
 ```
 - Bypasses decoder entirely
-- Training in progress
+- Cannot generate STEP (missing hole/fillet params)
 
-**Conceptual Note:** For simple parametric templates like L-brackets, we can go `params → LBracket() → STEP`. For arbitrary geometry without a parametric model, we'd need actual B-Rep reconstruction from features — a much harder unsolved problem.
+**3. Full Latent Regressor (all params) — Recommended:**
+```
+z (32D) → MLP backbone → Multi-head output:
+  ├── core_head → 4 params (leg1, leg2, width, thickness)
+  ├── fillet_head → radius + exists probability
+  ├── hole1_heads → 2 slots × (diameter, distance, exists)
+  └── hole2_heads → 2 slots × (diameter, distance, exists)
+```
+- Predicts ALL variable topology parameters
+- Existence heads handle variable hole counts (0-4 holes)
+- Masked loss: param loss only where features exist
+- Smoke test: 100% fillet acc, 95%+ hole acc after 2 epochs
+
+**Conceptual Note:** For parametric templates like L-brackets, we go `params → VariableLBracket() → STEP`. For arbitrary geometry, B-Rep reconstruction from features would be needed — a harder unsolved problem.
 
 ### Training Commands (Variable Topology)
 
@@ -149,7 +161,14 @@ python scripts/train_latent_editor.py \
     --epochs 20 --batch-size 8 --gradient-accumulation 4 \
     --output-dir outputs/latent_editor_variable
 
-# Latent Regressor (parallel training)
+# Full Latent Regressor (all params, recommended)
+python scripts/train_full_latent_regressor.py \
+    --vae-checkpoint outputs/vae_variable/best_model.pt \
+    --train-size 10000 --epochs 100 \
+    --cache-dir data/full_latent_regressor_cache \
+    --output-dir outputs/full_latent_regressor
+
+# Simple Latent Regressor (4 core params only)
 python scripts/train_latent_regressor.py \
     --vae-checkpoint outputs/vae_variable/best_model.pt \
     --train-size 10000 --epochs 100 \
@@ -252,7 +271,8 @@ Topology: 6-15 faces depending on holes/fillet.
 | `evaluate_variable_vae.py` | Analyze latent space (collapse, correlations, clustering) |
 | `generate_variable_edit_data.py` | Generate paired edit data for latent editor |
 | `train_latent_editor.py` | Train LLM latent editor with direction classifier |
-| `train_latent_regressor.py` | Train z → params MLP (bypasses decoder) |
+| `train_full_latent_regressor.py` | Train z → all params (multi-head with existence) |
+| `train_latent_regressor.py` | Train z → 4 core params only |
 | `train_variable_feature_regressor.py` | Train decoded features → params MLP |
 | `infer_latent_editor.py` | End-to-end inference with regressor selection |
 
@@ -286,7 +306,8 @@ python scripts/infer_latent_editor.py \
 **Current (Variable Topology):**
 - `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D)
 - `outputs/latent_editor_variable/` — In progress
-- `outputs/latent_regressor/` — In progress
+- `outputs/full_latent_regressor/` — Multi-head regressor (all params)
+- `outputs/latent_regressor/` — Simple regressor (4 core params)
 
 **Legacy (Fixed Topology):**
 - `outputs/vae_aux/best_model.pt` — Fixed topology VAE with aux loss (16D)
