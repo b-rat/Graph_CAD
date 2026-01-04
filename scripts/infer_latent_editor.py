@@ -184,6 +184,86 @@ def load_latent_regressor(checkpoint_path: str, device: str):
     return regressor, config
 
 
+def load_full_latent_regressor(checkpoint_path: str, device: str):
+    """Load trained FullLatentRegressor model (predicts ALL params from z)."""
+    from dataclasses import dataclass
+    import torch.nn as nn
+
+    @dataclass
+    class FullLatentRegressorConfig:
+        latent_dim: int = 32
+        hidden_dim: int = 256
+        num_layers: int = 3
+        dropout: float = 0.1
+        max_holes_per_leg: int = 2
+
+    class FullLatentRegressor(nn.Module):
+        def __init__(self, config: FullLatentRegressorConfig):
+            super().__init__()
+            self.config = config
+
+            # Shared backbone
+            layers = []
+            in_dim = config.latent_dim
+            for _ in range(config.num_layers):
+                layers.extend([
+                    nn.Linear(in_dim, config.hidden_dim),
+                    nn.LayerNorm(config.hidden_dim),
+                    nn.ReLU(),
+                    nn.Dropout(config.dropout),
+                ])
+                in_dim = config.hidden_dim
+            self.backbone = nn.Sequential(*layers)
+
+            # Core params head
+            self.core_head = nn.Linear(config.hidden_dim, 4)
+
+            # Fillet head
+            self.fillet_head = nn.Linear(config.hidden_dim, 1)
+            self.fillet_exists_head = nn.Linear(config.hidden_dim, 1)
+
+            # Hole heads
+            self.hole1_heads = nn.ModuleList([
+                nn.Linear(config.hidden_dim, 2) for _ in range(config.max_holes_per_leg)
+            ])
+            self.hole1_exists_head = nn.Linear(config.hidden_dim, config.max_holes_per_leg)
+
+            self.hole2_heads = nn.ModuleList([
+                nn.Linear(config.hidden_dim, 2) for _ in range(config.max_holes_per_leg)
+            ])
+            self.hole2_exists_head = nn.Linear(config.hidden_dim, config.max_holes_per_leg)
+
+        def forward(self, z: torch.Tensor) -> dict[str, torch.Tensor]:
+            h = self.backbone(z)
+            core_params = self.core_head(h)
+            fillet_radius = self.fillet_head(h)
+            fillet_exists = torch.sigmoid(self.fillet_exists_head(h))
+            hole1_params = torch.stack([head(h) for head in self.hole1_heads], dim=1)
+            hole1_exists = torch.sigmoid(self.hole1_exists_head(h))
+            hole2_params = torch.stack([head(h) for head in self.hole2_heads], dim=1)
+            hole2_exists = torch.sigmoid(self.hole2_exists_head(h))
+
+            return {
+                "core_params": core_params,
+                "fillet_radius": fillet_radius,
+                "fillet_exists": fillet_exists,
+                "hole1_params": hole1_params,
+                "hole1_exists": hole1_exists,
+                "hole2_params": hole2_params,
+                "hole2_exists": hole2_exists,
+            }
+
+    print(f"Loading FullLatentRegressor from {checkpoint_path}...")
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    config = FullLatentRegressorConfig(**checkpoint["config"])
+    regressor = FullLatentRegressor(config)
+    regressor.load_state_dict(checkpoint["model_state_dict"])
+    regressor.to(device)
+    regressor.eval()
+    print(f"  Config: {config.latent_dim}D → {config.num_layers}×{config.hidden_dim} → multi-head")
+    return regressor, config
+
+
 def load_editor(checkpoint_path: str, config, device: str, force_cpu: bool = False):
     """Load trained Latent Editor model."""
     from graph_cad.models.latent_editor import (
@@ -416,7 +496,13 @@ def main():
         "--latent-regressor-checkpoint",
         type=str,
         default=None,
-        help="Path to trained LatentRegressor checkpoint (predicts params directly from z, bypasses decoder)",
+        help="Path to trained LatentRegressor checkpoint (predicts 4 core params from z)",
+    )
+    parser.add_argument(
+        "--full-latent-regressor-checkpoint",
+        type=str,
+        default=None,
+        help="Path to trained FullLatentRegressor checkpoint (predicts ALL params from z, can generate STEP)",
     )
 
     # Output
@@ -626,21 +712,60 @@ def main():
     param_names = None
     use_latent_regressor = False
 
-    # Check for latent regressor first (preferred - bypasses decoder)
+    # Check for regressors in order of priority
+    full_latent_regressor_path = Path(args.full_latent_regressor_checkpoint) if args.full_latent_regressor_checkpoint else None
     latent_regressor_path = Path(args.latent_regressor_checkpoint) if args.latent_regressor_checkpoint else None
     regressor_path = Path(args.regressor_checkpoint)
 
-    if latent_regressor_path and latent_regressor_path.exists():
-        # Use latent regressor (z → params directly)
+    # Import ranges for denormalization
+    from graph_cad.data.dataset import VariableLBracketRanges
+    ranges = VariableLBracketRanges()
+
+    # For full regressor: store full predictions for STEP generation
+    full_regressor_outputs_orig = None
+    full_regressor_outputs_edit = None
+    use_full_regressor = False
+
+    if full_latent_regressor_path and full_latent_regressor_path.exists():
+        # Use full latent regressor (z → ALL params, can generate STEP)
+        use_full_regressor = True
+        use_latent_regressor = True
+        full_regressor, full_reg_config = load_full_latent_regressor(
+            args.full_latent_regressor_checkpoint, device
+        )
+        param_names = ["leg1_length", "leg2_length", "width", "thickness"]
+
+        # Denormalize core params
+        def denormalize_core(params_norm):
+            mins = torch.tensor([
+                ranges.leg1_length[0], ranges.leg2_length[0],
+                ranges.width[0], ranges.thickness[0],
+            ], device=params_norm.device)
+            maxs = torch.tensor([
+                ranges.leg1_length[1], ranges.leg2_length[1],
+                ranges.width[1], ranges.thickness[1],
+            ], device=params_norm.device)
+            return params_norm * (maxs - mins) + mins
+
+        # Predict ALL parameters from latent vectors
+        with torch.no_grad():
+            full_regressor_outputs_orig = full_regressor(z_src)
+            orig_core = denormalize_core(full_regressor_outputs_orig["core_params"])
+            orig_params_pred = orig_core.cpu().numpy().flatten()
+
+            full_regressor_outputs_edit = full_regressor(z_edited)
+            edit_core = denormalize_core(full_regressor_outputs_edit["core_params"])
+            edit_params_pred = edit_core.cpu().numpy().flatten()
+
+        print("  Using FullLatentRegressor (z → ALL params, can generate STEP)")
+
+    elif latent_regressor_path and latent_regressor_path.exists():
+        # Use simple latent regressor (z → 4 core params only)
         use_latent_regressor = True
         latent_regressor, latent_reg_config = load_latent_regressor(
             args.latent_regressor_checkpoint, device
         )
         param_names = ["leg1_length", "leg2_length", "width", "thickness"]
-
-        # Denormalize function for variable topology params
-        from graph_cad.data.dataset import VariableLBracketRanges
-        ranges = VariableLBracketRanges()
 
         def denormalize_latent_params(params_norm):
             mins = torch.tensor([
@@ -661,7 +786,7 @@ def main():
             edit_params_norm = latent_regressor(z_edited)
             edit_params_pred = denormalize_latent_params(edit_params_norm).cpu().numpy().flatten()
 
-        print("  Using LatentRegressor (z → params, bypasses decoder)")
+        print("  Using LatentRegressor (z → 4 core params, cannot generate STEP)")
 
     elif regressor_path.exists():
         # Use feature regressor (decode → features → params)
@@ -711,8 +836,9 @@ def main():
     else:
         print(f"  No regressor checkpoint found.")
         print("  Options:")
-        print(f"    --latent-regressor-checkpoint outputs/latent_regressor/best_model.pt")
-        print(f"    --regressor-checkpoint outputs/feature_regressor/best_model.pt")
+        print(f"    --full-latent-regressor-checkpoint outputs/full_latent_regressor/best_model.pt  (recommended, generates STEP)")
+        print(f"    --latent-regressor-checkpoint outputs/latent_regressor/best_model.pt  (4 core params only)")
+        print(f"    --regressor-checkpoint outputs/feature_regressor/best_model.pt  (via decoder)")
 
     # Display results if we have predictions
     if orig_params_pred is not None:
@@ -771,10 +897,89 @@ def main():
             except ValueError as e:
                 print(f"\n  Warning: Could not create valid L-bracket from predicted params: {e}")
                 edited_bracket = None
+        elif use_full_regressor:
+            # Full latent regressor - can generate STEP with VariableLBracket
+            from graph_cad.data.l_bracket import VariableLBracket
+
+            def outputs_to_variable_bracket(outputs, core_params_mm):
+                """Convert full regressor outputs to VariableLBracket."""
+                # Core params (already denormalized)
+                leg1 = float(core_params_mm[0])
+                leg2 = float(core_params_mm[1])
+                width = float(core_params_mm[2])
+                thickness = float(core_params_mm[3])
+
+                # Fillet
+                fillet_exists = outputs["fillet_exists"].cpu().item() > 0.5
+                if fillet_exists:
+                    fillet_radius = float(outputs["fillet_radius"].cpu().item() * ranges.fillet_radius[1])
+                else:
+                    fillet_radius = 0.0
+
+                # Holes on leg1
+                hole1_diams = []
+                hole1_dists = []
+                hole1_exists = outputs["hole1_exists"].cpu().numpy().flatten()
+                hole1_params = outputs["hole1_params"].cpu().numpy()[0]  # (2, 2)
+                for i in range(2):
+                    if hole1_exists[i] > 0.5:
+                        diam = hole1_params[i, 0] * (ranges.hole_diameter[1] - ranges.hole_diameter[0]) + ranges.hole_diameter[0]
+                        dist = hole1_params[i, 1] * leg1  # Relative to leg length
+                        hole1_diams.append(float(diam))
+                        hole1_dists.append(float(dist))
+
+                # Holes on leg2
+                hole2_diams = []
+                hole2_dists = []
+                hole2_exists = outputs["hole2_exists"].cpu().numpy().flatten()
+                hole2_params = outputs["hole2_params"].cpu().numpy()[0]  # (2, 2)
+                for i in range(2):
+                    if hole2_exists[i] > 0.5:
+                        diam = hole2_params[i, 0] * (ranges.hole_diameter[1] - ranges.hole_diameter[0]) + ranges.hole_diameter[0]
+                        dist = hole2_params[i, 1] * leg2
+                        hole2_diams.append(float(diam))
+                        hole2_dists.append(float(dist))
+
+                return VariableLBracket(
+                    leg1_length=leg1,
+                    leg2_length=leg2,
+                    width=width,
+                    thickness=thickness,
+                    fillet_radius=fillet_radius,
+                    hole1_diameters=tuple(hole1_diams),
+                    hole1_distances=tuple(hole1_dists),
+                    hole2_diameters=tuple(hole2_diams),
+                    hole2_distances=tuple(hole2_dists),
+                )
+
+            # Create predicted original bracket
+            try:
+                predicted_original_bracket = outputs_to_variable_bracket(
+                    full_regressor_outputs_orig, orig_params_pred
+                )
+                n_holes = predicted_original_bracket.num_holes_leg1 + predicted_original_bracket.num_holes_leg2
+                has_fillet = "with fillet" if predicted_original_bracket.has_fillet else "no fillet"
+                print(f"\n  Created predicted original VariableLBracket ({n_holes} holes, {has_fillet})")
+            except ValueError as e:
+                print(f"\n  Warning: Could not create predicted original bracket: {e}")
+                predicted_original_bracket = None
+
+            # Create edited bracket
+            try:
+                edited_bracket = outputs_to_variable_bracket(
+                    full_regressor_outputs_edit, edit_params_pred
+                )
+                n_holes = edited_bracket.num_holes_leg1 + edited_bracket.num_holes_leg2
+                has_fillet = "with fillet" if edited_bracket.has_fillet else "no fillet"
+                print(f"  Created edited VariableLBracket ({n_holes} holes, {has_fillet})")
+            except ValueError as e:
+                print(f"\n  Warning: Could not create edited bracket: {e}")
+                edited_bracket = None
+
         elif use_latent_regressor:
-            # 4-param regressors (latent or variable feature) can't generate STEP without hole params
+            # Simple latent regressor or variable feature regressor - only 4 params
             print("\n  Note: Regressor predicts 4 core params only (leg1, leg2, width, thickness).")
-            print("  STEP file generation requires hole parameters - skipping geometry creation.")
+            print("  Use --full-latent-regressor-checkpoint for STEP generation.")
 
     # =========================================================================
     # Step 7: Compare and display results
@@ -809,7 +1014,12 @@ def main():
         latent_data["edited_params"] = {
             name: float(edit_params_pred[i]) for i, name in enumerate(param_names)
         }
-        latent_data["regressor_type"] = "latent" if use_latent_regressor else "feature"
+        if use_full_regressor:
+            latent_data["regressor_type"] = "full_latent"
+        elif use_latent_regressor:
+            latent_data["regressor_type"] = "latent"
+        else:
+            latent_data["regressor_type"] = "feature"
     latent_path = output_dir / "latent_vectors.json"
     with open(latent_path, "w") as f:
         json.dump(latent_data, f, indent=2)
