@@ -28,6 +28,7 @@ import torch.nn.functional as F
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader, TensorDataset
+from torch_geometric.loader import DataLoader as PyGDataLoader
 from tqdm import tqdm
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -179,7 +180,7 @@ def prepare_dataset(
         max_edges=vae.config.max_edges,
         seed=seed,
     )
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=False)
+    loader = PyGDataLoader(dataset, batch_size=batch_size, shuffle=False)
 
     all_node_features = []
     all_edge_features = []
