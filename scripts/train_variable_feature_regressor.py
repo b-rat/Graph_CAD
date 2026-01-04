@@ -209,8 +209,8 @@ def prepare_dataset(
 
             # Decode
             outputs = vae.decode(mu)
-            node_recon = outputs["node_recon"]  # (batch, max_nodes, 9)
-            edge_recon = outputs["edge_recon"]  # (batch, max_edges, 2)
+            node_recon = outputs["node_features"]  # (batch, max_nodes, 9)
+            edge_recon = outputs["edge_features"]  # (batch, max_edges, 2)
 
             all_node_features.append(node_recon.cpu())
             all_edge_features.append(edge_recon.cpu())
