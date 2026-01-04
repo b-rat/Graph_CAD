@@ -137,10 +137,11 @@ python scripts/train_variable_vae.py \
     --epochs 100 --latent-dim 32 \
     --output-dir outputs/vae_variable
 
-# Edit data generation + Latent Editor (in progress)
+# Edit data generation + Latent Editor
+# Note: --paired is for contrastive learning; direction classifier doesn't need it
 python scripts/generate_variable_edit_data.py \
     --vae-checkpoint outputs/vae_variable/best_model.pt \
-    --num-samples 50000 --paired \
+    --num-samples 50000 \
     --output data/edit_data_variable && \
 python scripts/train_latent_editor.py \
     --data-dir data/edit_data_variable \
@@ -253,6 +254,30 @@ Topology: 6-15 faces depending on holes/fillet.
 | `train_latent_editor.py` | Train LLM latent editor with direction classifier |
 | `train_latent_regressor.py` | Train z → params MLP (bypasses decoder) |
 | `train_variable_feature_regressor.py` | Train decoded features → params MLP |
+| `infer_latent_editor.py` | End-to-end inference with regressor selection |
+
+### Inference
+
+```bash
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 longer" \
+    --vae-checkpoint outputs/vae_variable/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_variable/best_model.pt \
+    --latent-regressor-checkpoint outputs/latent_regressor/best_model.pt
+```
+
+**Regressor Options (auto-detected from checkpoint):**
+
+| Flag | Regressor Type | Path | Params |
+|------|----------------|------|--------|
+| `--latent-regressor-checkpoint` | LatentRegressor | z → MLP → params | 4 |
+| `--regressor-checkpoint` | VariableFeatureRegressor | z → decode → MLP → params | 4 |
+| `--regressor-checkpoint` | FixedFeatureRegressor | z → decode → MLP → params | 8 |
+
+- Latent regressor takes priority if both provided
+- Variable vs fixed feature regressor auto-detected via `max_nodes` in checkpoint config
+- 4-param regressors cannot generate STEP files (missing hole parameters)
 
 ---
 
