@@ -351,6 +351,35 @@ class VariableLBracketDataset(Dataset):
             core_ranges[:, 1] - core_ranges[:, 0]
         )
 
+        # Full parameter extraction for multi-head regressor
+        # Fillet: normalized radius and exists flag
+        fillet_radius_norm = bracket.fillet_radius / self.ranges.fillet_radius[1]  # Normalize to [0, 1]
+        fillet_exists = 1.0 if bracket.fillet_radius > 0 else 0.0
+
+        # Holes on leg1 (up to 2 slots)
+        hole1_params = torch.zeros(2, 2, dtype=torch.float32)  # (slot, (diam, dist))
+        hole1_exists = torch.zeros(2, dtype=torch.float32)
+        for i, (diam, dist) in enumerate(zip(bracket.hole1_diameters, bracket.hole1_distances)):
+            if i >= 2:
+                break
+            hole1_params[i, 0] = (diam - self.ranges.hole_diameter[0]) / (
+                self.ranges.hole_diameter[1] - self.ranges.hole_diameter[0]
+            )
+            hole1_params[i, 1] = dist / bracket.leg1_length  # Relative position
+            hole1_exists[i] = 1.0
+
+        # Holes on leg2 (up to 2 slots)
+        hole2_params = torch.zeros(2, 2, dtype=torch.float32)
+        hole2_exists = torch.zeros(2, dtype=torch.float32)
+        for i, (diam, dist) in enumerate(zip(bracket.hole2_diameters, bracket.hole2_distances)):
+            if i >= 2:
+                break
+            hole2_params[i, 0] = (diam - self.ranges.hole_diameter[0]) / (
+                self.ranges.hole_diameter[1] - self.ranges.hole_diameter[0]
+            )
+            hole2_params[i, 1] = dist / bracket.leg2_length
+            hole2_exists[i] = 1.0
+
         # Create PyG Data object
         data = Data(
             # Graph structure
@@ -364,8 +393,15 @@ class VariableLBracketDataset(Dataset):
             # Actual sizes
             num_real_nodes=torch.tensor([num_nodes], dtype=torch.long),
             num_real_edges=torch.tensor([num_edges], dtype=torch.long),
-            # Parameters
+            # Core parameters (normalized)
             y=core_params_normalized,
+            # Full parameters for multi-head regressor
+            fillet_radius=torch.tensor([fillet_radius_norm], dtype=torch.float32),
+            fillet_exists=torch.tensor([fillet_exists], dtype=torch.float32),
+            hole1_params=hole1_params,
+            hole1_exists=hole1_exists,
+            hole2_params=hole2_params,
+            hole2_exists=hole2_exists,
             # Metadata
             bbox_diagonal=torch.tensor([graph.bbox_diagonal], dtype=torch.float32),
             has_fillet=torch.tensor([1.0 if bracket.has_fillet else 0.0], dtype=torch.float32),
