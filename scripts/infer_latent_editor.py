@@ -72,14 +72,72 @@ def load_vae(checkpoint_path: str, device: str):
 
 
 def load_feature_regressor(checkpoint_path: str, device: str):
-    """Load trained FeatureRegressor model."""
-    from graph_cad.models.feature_regressor import load_feature_regressor as _load
+    """Load trained FeatureRegressor model (fixed or variable topology)."""
+    import torch.nn as nn
+    from dataclasses import dataclass
 
     print(f"Loading FeatureRegressor from {checkpoint_path}...")
-    regressor, checkpoint = _load(checkpoint_path, device=device)
-    regressor.eval()
-    print(f"  Config: {regressor.config.hidden_dims}")
-    return regressor
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    config_dict = checkpoint["config"]
+
+    # Detect variable vs fixed topology based on config keys
+    if "max_nodes" in config_dict:
+        # Variable topology feature regressor
+        @dataclass
+        class VariableFeatureRegressorConfig:
+            max_nodes: int = 20
+            max_edges: int = 50
+            node_features: int = 9
+            edge_features: int = 2
+            hidden_dims: tuple[int, ...] = (512, 256, 128, 64)
+            dropout: float = 0.1
+            use_batch_norm: bool = True
+            num_params: int = 4
+
+            @property
+            def input_dim(self) -> int:
+                return self.max_nodes * self.node_features + self.max_edges * self.edge_features
+
+        class VariableFeatureRegressor(nn.Module):
+            def __init__(self, config):
+                super().__init__()
+                self.config = config
+                layers = []
+                in_dim = config.input_dim
+                for hidden_dim in config.hidden_dims:
+                    layers.append(nn.Linear(in_dim, hidden_dim))
+                    if config.use_batch_norm:
+                        layers.append(nn.BatchNorm1d(hidden_dim))
+                    layers.append(nn.ReLU())
+                    layers.append(nn.Dropout(config.dropout))
+                    in_dim = hidden_dim
+                self.backbone = nn.Sequential(*layers)
+                self.output_head = nn.Linear(in_dim, config.num_params)
+
+            def forward(self, node_features, edge_features):
+                batch_size = node_features.shape[0]
+                node_flat = node_features.view(batch_size, -1)
+                edge_flat = edge_features.view(batch_size, -1)
+                x = torch.cat([node_flat, edge_flat], dim=-1)
+                h = self.backbone(x)
+                return self.output_head(h)
+
+        config = VariableFeatureRegressorConfig(**config_dict)
+        regressor = VariableFeatureRegressor(config)
+        regressor.load_state_dict(checkpoint["model_state_dict"])
+        regressor.to(device)
+        regressor.eval()
+        print(f"  Type: Variable topology (4 params)")
+        print(f"  Input: {config.max_nodes}×{config.node_features} + {config.max_edges}×{config.edge_features} = {config.input_dim}D")
+        return regressor, "variable"
+    else:
+        # Fixed topology feature regressor
+        from graph_cad.models.feature_regressor import load_feature_regressor as _load
+        regressor, _ = _load(checkpoint_path, device=device)
+        regressor.eval()
+        print(f"  Type: Fixed topology (8 params)")
+        print(f"  Config: {regressor.config.hidden_dims}")
+        return regressor, "fixed"
 
 
 def load_latent_regressor(checkpoint_path: str, device: str):
@@ -607,10 +665,32 @@ def main():
 
     elif regressor_path.exists():
         # Use feature regressor (decode → features → params)
-        from graph_cad.models.parameter_regressor import PARAMETER_NAMES, denormalize_parameters
-        param_names = PARAMETER_NAMES
+        regressor, regressor_type = load_feature_regressor(args.regressor_checkpoint, device)
 
-        regressor = load_feature_regressor(args.regressor_checkpoint, device)
+        if regressor_type == "variable":
+            # Variable topology: 4 params
+            param_names = ["leg1_length", "leg2_length", "width", "thickness"]
+            use_latent_regressor = True  # Same behavior as latent regressor (4 params, no STEP)
+
+            # Denormalize function for variable topology params
+            from graph_cad.data.dataset import VariableLBracketRanges
+            ranges = VariableLBracketRanges()
+
+            def denormalize_fn(params_norm):
+                mins = torch.tensor([
+                    ranges.leg1_length[0], ranges.leg2_length[0],
+                    ranges.width[0], ranges.thickness[0],
+                ], device=params_norm.device)
+                maxs = torch.tensor([
+                    ranges.leg1_length[1], ranges.leg2_length[1],
+                    ranges.width[1], ranges.thickness[1],
+                ], device=params_norm.device)
+                return params_norm * (maxs - mins) + mins
+        else:
+            # Fixed topology: 8 params
+            from graph_cad.models.parameter_regressor import PARAMETER_NAMES, denormalize_parameters
+            param_names = PARAMETER_NAMES
+            denormalize_fn = denormalize_parameters
 
         # Predict parameters from decoded features
         with torch.no_grad():
@@ -618,15 +698,15 @@ def main():
             orig_node_t = torch.tensor(orig_node_recon, dtype=torch.float32, device=device).unsqueeze(0)
             orig_edge_t = torch.tensor(orig_edge_recon, dtype=torch.float32, device=device).unsqueeze(0)
             orig_params_norm = regressor(orig_node_t, orig_edge_t)
-            orig_params_pred = denormalize_parameters(orig_params_norm).cpu().numpy().flatten()
+            orig_params_pred = denormalize_fn(orig_params_norm).cpu().numpy().flatten()
 
             # Edited
             edit_node_t = torch.tensor(edit_node_recon, dtype=torch.float32, device=device).unsqueeze(0)
             edit_edge_t = torch.tensor(edit_edge_recon, dtype=torch.float32, device=device).unsqueeze(0)
             edit_params_norm = regressor(edit_node_t, edit_edge_t)
-            edit_params_pred = denormalize_parameters(edit_params_norm).cpu().numpy().flatten()
+            edit_params_pred = denormalize_fn(edit_params_norm).cpu().numpy().flatten()
 
-        print("  Using FeatureRegressor (decode → features → params)")
+        print(f"  Using FeatureRegressor ({regressor_type} topology, decode → features → {len(param_names)} params)")
 
     else:
         print(f"  No regressor checkpoint found.")
@@ -692,8 +772,8 @@ def main():
                 print(f"\n  Warning: Could not create valid L-bracket from predicted params: {e}")
                 edited_bracket = None
         elif use_latent_regressor:
-            # Latent regressor only predicts 4 core params - can't generate STEP without hole params
-            print("\n  Note: LatentRegressor predicts 4 core params only (no holes).")
+            # 4-param regressors (latent or variable feature) can't generate STEP without hole params
+            print("\n  Note: Regressor predicts 4 core params only (leg1, leg2, width, thickness).")
             print("  STEP file generation requires hole parameters - skipping geometry creation.")
 
     # =========================================================================
