@@ -846,12 +846,19 @@ class VariableLBracket:
                 min_spacing = (d1 + d2) / 2 + 3  # 3mm min wall
                 total_space = available_length - d1 / 2 - d2 / 2  # Account for hole radii
 
-                if total_space > min_spacing:
+                if total_space > min_spacing + d1:
                     # First hole near end
                     dist1 = rng.uniform(d1, d1 + (total_space - min_spacing) / 2)
                     # Second hole further in (but not into fillet zone)
-                    dist2 = rng.uniform(dist1 + min_spacing, available_length - d2 / 2)
-                    hole1_distances = [dist1, dist2]
+                    dist2_min = dist1 + min_spacing
+                    dist2_max = available_length - d2 / 2
+                    if dist2_max > dist2_min:
+                        dist2 = rng.uniform(dist2_min, dist2_max)
+                        hole1_distances = [dist1, dist2]
+                    else:
+                        # Edge case: fall back to 1 hole
+                        hole1_diameters = [hole1_diameters[0]]
+                        hole1_distances = [available_length / 2]
                 else:
                     # Not enough space for 2 holes, fall back to 1
                     hole1_diameters = [hole1_diameters[0]]
@@ -882,10 +889,17 @@ class VariableLBracket:
                 min_spacing = (d1 + d2) / 2 + 3
                 total_space = available_length - d1 / 2 - d2 / 2
 
-                if total_space > min_spacing:
+                if total_space > min_spacing + d1:
                     dist1 = rng.uniform(d1, d1 + (total_space - min_spacing) / 2)
-                    dist2 = rng.uniform(dist1 + min_spacing, available_length - d2 / 2)
-                    hole2_distances = [dist1, dist2]
+                    dist2_min = dist1 + min_spacing
+                    dist2_max = available_length - d2 / 2
+                    if dist2_max > dist2_min:
+                        dist2 = rng.uniform(dist2_min, dist2_max)
+                        hole2_distances = [dist1, dist2]
+                    else:
+                        # Edge case: fall back to 1 hole
+                        hole2_diameters = [hole2_diameters[0]]
+                        hole2_distances = [available_length / 2]
                 else:
                     hole2_diameters = [hole2_diameters[0]]
                     hole2_distances = [available_length / 2]
