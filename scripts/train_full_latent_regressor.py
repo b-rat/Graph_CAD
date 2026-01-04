@@ -280,7 +280,8 @@ def compute_loss(
         outputs["fillet_exists"], fillet_exists_target
     )
     # Fillet radius - MSE only where fillet exists
-    fillet_mask = fillet_exists_target.unsqueeze(-1)  # (batch, 1)
+    # Note: fillet_exists_target is (batch, 1), same as fillet_radius - no unsqueeze needed
+    fillet_mask = fillet_exists_target  # (batch, 1)
     if fillet_mask.sum() > 0:
         fillet_radius_loss = (
             F.mse_loss(outputs["fillet_radius"], fillet_radius_target, reduction='none')
