@@ -287,17 +287,23 @@ python scripts/infer_latent_editor.py \
     --latent-regressor-checkpoint outputs/latent_regressor/best_model.pt
 ```
 
-**Regressor Options (auto-detected from checkpoint):**
+**Regressor Options (priority order):**
 
-| Flag | Regressor Type | Path | Params |
-|------|----------------|------|--------|
-| `--latent-regressor-checkpoint` | LatentRegressor | z → MLP → params | 4 |
-| `--regressor-checkpoint` | VariableFeatureRegressor | z → decode → MLP → params | 4 |
-| `--regressor-checkpoint` | FixedFeatureRegressor | z → decode → MLP → params | 8 |
+| Flag | Regressor Type | Params | STEP Output |
+|------|----------------|--------|-------------|
+| `--full-latent-regressor-checkpoint` | FullLatentRegressor | All (4 core + fillet + 4 holes) | **Yes** |
+| `--latent-regressor-checkpoint` | LatentRegressor | 4 core only | No |
+| `--regressor-checkpoint` | FeatureRegressor | 4 or 8 (auto-detect) | Fixed only |
 
-- Latent regressor takes priority if both provided
-- Variable vs fixed feature regressor auto-detected via `max_nodes` in checkpoint config
-- 4-param regressors cannot generate STEP files (missing hole parameters)
+Example with full regressor (generates STEP):
+```bash
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 longer" \
+    --vae-checkpoint outputs/vae_variable/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_variable/best_model.pt \
+    --full-latent-regressor-checkpoint outputs/full_latent_regressor/best_model.pt
+```
 
 ---
 
