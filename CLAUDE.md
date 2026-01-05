@@ -190,38 +190,56 @@ Graph → GNN Encoder → z (32D) → Parameter Decoder → All L-bracket params
 
 Actual parameters vary by topology: 4 (plain) to 13 (2 holes/leg + fillet).
 
-**Early Results (3 epochs, 100 samples):**
+### ParameterVAE Training Results
 
-| Parameter | VariableGraphVAE | ParameterVAE |
-|-----------|------------------|--------------|
-| leg1 | r=0.088 | r=**0.248** |
-| leg2 | r=0.112 | r=**0.412** |
-| width | r=0.055 | r=**0.689** |
-| thickness | r=0.073 | r=**0.502** |
+**v1 (Posterior Collapse):** Initial training with weak bottleneck (beta=0.01, free_bits=2.0, decoder=3×256) resulted in posterior collapse:
+- KL loss: 0.0145 (near zero information in latent)
+- Correlations: r < 0.11 (weak)
+- The powerful decoder bypassed the latent bottleneck
 
-Much stronger parameter correlations — directions should be learnable.
+**v2 (Stricter Bottleneck):** Fixed with beta=0.1, free_bits=0.5, decoder=2×128:
+
+| Metric | v1 | v2 |
+|--------|-----|-----|
+| KL loss | 0.0145 | **0.19** |
+| Raw KL | ~0 | **11.78 nats** |
+| Core loss | 0.083 | 0.083 |
+| Existence Acc | 100% | 100% |
+
+**Linear Correlations (still weak):**
+
+| Parameter | v1 | v2 |
+|-----------|-----|-----|
+| leg1 | 0.102 | 0.103 |
+| leg2 | 0.039 | 0.039 |
+| width | 0.070 | 0.074 |
+| thickness | 0.090 | 0.086 |
+
+**Interpretation:** With 11.78 nats now flowing through z (vs ~0 before), information IS being encoded. However, the decoder learns a *nonlinear* mapping from z to params, so linear (Pearson) correlations remain weak. The latent editor may still learn nonlinear edit directions.
+
+**Checkpoint:** `outputs/parameter_vae_v2/best_model.pt`
 
 ### Training Commands (Variable Topology)
 
 ```bash
-# ParameterVAE (recommended - replaces VariableGraphVAE)
+# ParameterVAE v2 (stricter bottleneck - recommended)
 python scripts/train_parameter_vae.py \
     --train-size 5000 --val-size 500 --test-size 500 \
     --epochs 100 --latent-dim 32 \
-    --output-dir outputs/parameter_vae
+    --output-dir outputs/parameter_vae_v2
 
 # Generate edit data (auto-detects VAE type from checkpoint)
 python scripts/generate_variable_edit_data.py \
-    --vae-checkpoint outputs/parameter_vae/best_model.pt \
+    --vae-checkpoint outputs/parameter_vae_v2/best_model.pt \
     --num-samples 50000 \
-    --output data/edit_data_parameter_vae
+    --output data/edit_data_parameter_vae_v2
 
 # Train latent editor (same script for both VAE types)
 python scripts/train_latent_editor.py \
-    --data-dir data/edit_data_parameter_vae \
+    --data-dir data/edit_data_parameter_vae_v2 \
     --latent-dim 32 --direction-weight 0.5 \
     --epochs 20 --batch-size 8 --gradient-accumulation 4 \
-    --output-dir outputs/latent_editor_parameter_vae
+    --output-dir outputs/latent_editor_parameter_vae_v2
 ```
 
 **Legacy (VariableGraphVAE approach):**
@@ -380,11 +398,14 @@ python scripts/infer_latent_editor.py \
 
 ## Model Checkpoints
 
-**Current (Variable Topology):**
-- `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D) ✓
-- `outputs/full_latent_regressor/best_model.pt` — Multi-head regressor, 100% exist acc ✓
-- `outputs/latent_editor_variable/best_model.pt` — 64% direction acc (tuning)
-- `outputs/latent_regressor/` — Simple regressor (4 core params)
+**Current (ParameterVAE approach):**
+- `outputs/parameter_vae_v2/best_model.pt` — ParameterVAE with stricter bottleneck, 11.78 nats ✓
+- `outputs/latent_editor_parameter_vae_v2/` — (pending training)
+
+**Legacy (VariableGraphVAE approach):**
+- `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D)
+- `outputs/full_latent_regressor/best_model.pt` — Multi-head regressor, 100% exist acc
+- `outputs/latent_editor_variable/best_model.pt` — 64% direction acc (ceiling hit)
 
 **Legacy (Fixed Topology):**
 - `outputs/vae_aux/best_model.pt` — Fixed topology VAE with aux loss (16D)
@@ -405,8 +426,8 @@ python scripts/infer_latent_editor.py \
 
 ## Next Steps
 
-1. **Train ParameterVAE** — Full training run to verify strong parameter correlations
-2. **Generate edit data** — Using ParameterVAE checkpoint
-3. **Train latent editor** — With ParameterVAE, direction_weight=0.5 should work (like fixed topology)
-4. **End-to-end evaluation** — Test full pipeline: instruction → edited STEP file
+1. ~~**Train ParameterVAE**~~ — Done (v2 with stricter bottleneck, 11.78 nats) ✓
+2. **Train latent editor on ParameterVAE v2** — Test if nonlinear info improves direction accuracy
+3. **End-to-end evaluation** — Test full pipeline: instruction → edited STEP file
+4. **If still stuck**: Consider auxiliary linear head on z for explicit parameter supervision
 5. **Future**: More complex geometry / multiple part families
