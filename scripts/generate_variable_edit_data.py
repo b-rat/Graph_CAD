@@ -33,6 +33,7 @@ from graph_cad.data.edit_dataset import generate_instruction
 from graph_cad.data.graph_extraction import extract_graph_from_solid_variable
 from graph_cad.data.l_bracket import VariableLBracket, VariableLBracketRanges
 from graph_cad.models.graph_vae import VariableGraphVAE, VariableGraphVAEConfig
+from graph_cad.models.parameter_vae import ParameterVAE, ParameterVAEConfig
 
 
 # Parameter delta ranges for variable topology (core params only)
@@ -45,12 +46,28 @@ PARAM_DELTA_RANGES = {
 }
 
 
-def load_variable_vae(checkpoint_path: str, device: str) -> tuple[VariableGraphVAE, dict]:
-    """Load variable topology VAE from checkpoint."""
-    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+def load_vae(checkpoint_path: str, device: str) -> tuple[VariableGraphVAE | ParameterVAE, dict]:
+    """
+    Load VAE from checkpoint (auto-detects VariableGraphVAE or ParameterVAE).
 
-    config = VariableGraphVAEConfig(**checkpoint["config"])
-    model = VariableGraphVAE(config)
+    Both VAE types have identical encoders, so they produce compatible latent vectors.
+    """
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    config_dict = checkpoint["config"]
+
+    # Auto-detect VAE type from config keys
+    # ParameterVAEConfig has 'max_holes_per_leg', VariableGraphVAEConfig has 'decoder_hidden_dims'
+    if "max_holes_per_leg" in config_dict or "decoder_hidden_dim" in config_dict:
+        # ParameterVAE
+        config = ParameterVAEConfig(**config_dict)
+        model = ParameterVAE(config)
+        print(f"Detected ParameterVAE (latent_dim={config.latent_dim})")
+    else:
+        # VariableGraphVAE
+        config = VariableGraphVAEConfig(**config_dict)
+        model = VariableGraphVAE(config)
+        print(f"Detected VariableGraphVAE (latent_dim={config.latent_dim})")
+
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
     model.eval()
@@ -59,7 +76,7 @@ def load_variable_vae(checkpoint_path: str, device: str) -> tuple[VariableGraphV
 
 
 def encode_bracket(
-    vae: VariableGraphVAE,
+    vae: VariableGraphVAE | ParameterVAE,
     bracket: VariableLBracket,
     device: str,
     max_nodes: int = 20,
@@ -117,7 +134,7 @@ def encode_bracket(
 
 
 def generate_single_edit_sample(
-    vae: VariableGraphVAE,
+    vae: VariableGraphVAE | ParameterVAE,
     rng: np.random.Generator,
     device: str,
     max_nodes: int = 20,
@@ -193,7 +210,7 @@ def generate_single_edit_sample(
 
 
 def generate_paired_edit_sample(
-    vae: VariableGraphVAE,
+    vae: VariableGraphVAE | ParameterVAE,
     rng: np.random.Generator,
     device: str,
     max_nodes: int = 20,
@@ -281,7 +298,7 @@ def generate_paired_edit_sample(
 
 
 def generate_noop_sample(
-    vae: VariableGraphVAE,
+    vae: VariableGraphVAE | ParameterVAE,
     rng: np.random.Generator,
     device: str,
     max_nodes: int = 20,
@@ -313,7 +330,7 @@ def generate_noop_sample(
 
 
 def generate_dataset(
-    vae: VariableGraphVAE,
+    vae: VariableGraphVAE | ParameterVAE,
     num_samples: int,
     device: str,
     max_nodes: int,
@@ -369,7 +386,7 @@ def generate_dataset(
 
 
 def generate_paired_dataset(
-    vae: VariableGraphVAE,
+    vae: VariableGraphVAE | ParameterVAE,
     num_pairs: int,
     device: str,
     max_nodes: int,
@@ -482,7 +499,7 @@ def main():
 
     # Load VAE
     print(f"Loading variable VAE from {args.vae_checkpoint}...")
-    vae, checkpoint = load_variable_vae(args.vae_checkpoint, device)
+    vae, checkpoint = load_vae(args.vae_checkpoint, device)
     print(f"  Latent dim: {vae.config.latent_dim}")
     print(f"  Max nodes: {vae.config.max_nodes}")
     print(f"  Max edges: {vae.config.max_edges}")
