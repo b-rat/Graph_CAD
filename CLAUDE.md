@@ -210,12 +210,13 @@ python scripts/train_parameter_vae.py \
     --epochs 100 --latent-dim 32 \
     --output-dir outputs/parameter_vae
 
-# After ParameterVAE: generate edit data and train editor
+# Generate edit data (auto-detects VAE type from checkpoint)
 python scripts/generate_variable_edit_data.py \
     --vae-checkpoint outputs/parameter_vae/best_model.pt \
     --num-samples 50000 \
     --output data/edit_data_parameter_vae
 
+# Train latent editor (same script for both VAE types)
 python scripts/train_latent_editor.py \
     --data-dir data/edit_data_parameter_vae \
     --latent-dim 32 --direction-weight 0.5 \
@@ -341,7 +342,7 @@ Topology: 6-15 faces depending on holes/fillet.
 | `train_parameter_vae.py` | **Train ParameterVAE (recommended)** |
 | `train_variable_vae.py` | Train VariableGraphVAE (legacy) |
 | `evaluate_variable_vae.py` | Analyze latent space (collapse, correlations, clustering) |
-| `generate_variable_edit_data.py` | Generate paired edit data for latent editor |
+| `generate_variable_edit_data.py` | Generate paired edit data (auto-detects ParameterVAE or VariableGraphVAE) |
 | `train_latent_editor.py` | Train LLM latent editor with direction classifier |
 | `train_full_latent_regressor.py` | Train z → all params (for VariableGraphVAE) |
 | `infer_latent_editor.py` | End-to-end inference with regressor selection |
