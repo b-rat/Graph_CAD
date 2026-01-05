@@ -150,56 +150,92 @@ z (32D) → MLP backbone → Multi-head output:
 
 **Conceptual Note:** For parametric templates like L-brackets, we go `params → VariableLBracket() → STEP`. For arbitrary geometry, B-Rep reconstruction from features would be needed — a harder unsolved problem.
 
-### Latent Editor — Training In Progress
+### Latent Editor — 64% Ceiling Problem
 
-**Results with direction_weight=0.5:**
+**Results across direction_weight values:**
 
-| Metric | Fixed (16D) | Variable (32D) |
-|--------|-------------|----------------|
-| Direction Accuracy | **80.2%** | 64.3% |
-| Delta MSE | 0.0058 | 0.000004 |
+| direction_weight | Direction Acc | Plateau Epoch |
+|------------------|---------------|---------------|
+| 0.5 | 64.3% | ~5 |
+| 1.0 | 64% | ~3 |
+| 2.0 | 63.8% | ~3 |
 
-**Analysis:**
-- Very low delta MSE suggests model produces tiny deltas to minimize loss
-- Direction accuracy lower than fixed topology (64% vs 80%)
-- Larger latent space (32D) may need stronger direction supervision
+**Root Cause:** The VariableGraphVAE decodes to **graph features** (centroids, areas, normals), not parameters. The latent space encodes geometry, but parameters are only weakly correlated (r<0.12). "Make leg1 longer" has no consistent direction in z-space.
 
-**Next:** Retrain with `--direction-weight 1.0` to prioritize direction accuracy over MSE.
+**Comparison to Fixed Topology:**
+- Fixed VAE used `aux_weight=0.1` → parameters encoded in latent → 80% direction acc
+- Variable VAE used `aux_weight=0.0` → geometry encoded, not params → 64% ceiling
+
+### Solution: ParameterVAE
+
+Instead of decoding to graph features, decode directly to parameters. This forces the latent space to encode parameter information.
+
+**Architecture:**
+```
+Graph → GNN Encoder → z (32D) → Parameter Decoder → All L-bracket params
+                                        ↓
+                    [leg1, leg2, width, thickness, fillet, holes]
+```
+
+**Key Insight:** The graph encoder still sees geometry (centroids, areas, curvatures), but the decoder MUST output parameters. This forces z to encode parameters explicitly.
+
+**Parameter Decoder Outputs (18 values):**
+
+| Component | Values | Description |
+|-----------|--------|-------------|
+| core_params | 4 | leg1, leg2, width, thickness |
+| fillet_radius | 1 | + fillet_exists (1) |
+| hole1_params | 4 | 2 slots × (diameter, distance) + exists (2) |
+| hole2_params | 4 | 2 slots × (diameter, distance) + exists (2) |
+
+Actual parameters vary by topology: 4 (plain) to 13 (2 holes/leg + fillet).
+
+**Early Results (3 epochs, 100 samples):**
+
+| Parameter | VariableGraphVAE | ParameterVAE |
+|-----------|------------------|--------------|
+| leg1 | r=0.088 | r=**0.248** |
+| leg2 | r=0.112 | r=**0.412** |
+| width | r=0.055 | r=**0.689** |
+| thickness | r=0.073 | r=**0.502** |
+
+Much stronger parameter correlations — directions should be learnable.
 
 ### Training Commands (Variable Topology)
 
 ```bash
-# VAE (complete)
+# ParameterVAE (recommended - replaces VariableGraphVAE)
+python scripts/train_parameter_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/parameter_vae
+
+# After ParameterVAE: generate edit data and train editor
+python scripts/generate_variable_edit_data.py \
+    --vae-checkpoint outputs/parameter_vae/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data_parameter_vae
+
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_parameter_vae \
+    --latent-dim 32 --direction-weight 0.5 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_parameter_vae
+```
+
+**Legacy (VariableGraphVAE approach):**
+```bash
+# Original VAE (weak parameter correlations)
 python scripts/train_variable_vae.py \
     --train-size 5000 --val-size 500 --test-size 500 \
     --epochs 100 --latent-dim 32 \
     --output-dir outputs/vae_variable
 
-# Edit data generation (one-time)
-python scripts/generate_variable_edit_data.py \
-    --vae-checkpoint outputs/vae_variable/best_model.pt \
-    --num-samples 50000 \
-    --output data/edit_data_variable
-
-# Latent Editor training (try direction-weight 1.0 for better direction acc)
-python scripts/train_latent_editor.py \
-    --data-dir data/edit_data_variable \
-    --latent-dim 32 --direction-weight 1.0 \
-    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
-    --output-dir outputs/latent_editor_variable
-
-# Full Latent Regressor (all params, recommended)
+# Full Latent Regressor (for z → params after VAE)
 python scripts/train_full_latent_regressor.py \
     --vae-checkpoint outputs/vae_variable/best_model.pt \
     --train-size 10000 --epochs 100 \
-    --cache-dir data/full_latent_regressor_cache \
     --output-dir outputs/full_latent_regressor
-
-# Simple Latent Regressor (4 core params only)
-python scripts/train_latent_regressor.py \
-    --vae-checkpoint outputs/vae_variable/best_model.pt \
-    --train-size 10000 --epochs 100 \
-    --output-dir outputs/latent_regressor
 ```
 
 ---
@@ -276,11 +312,19 @@ Topology: 6-15 faces depending on holes/fillet.
 | 1 | HOLE | Cylinder with arc ≥ 180° |
 | 2 | FILLET | Cylinder with arc < 180°, or torus |
 
-### VariableGraphVAE
+### VariableGraphVAE (Legacy)
 
 - **Encoder**: GNN with face type embeddings, attention pooling
 - **Latent**: 32D
 - **Decoder**: MLP → node features + edge features + masks + face type logits
+- **Limitation**: Weak parameter correlations (r<0.12)
+
+### ParameterVAE (Recommended)
+
+- **Encoder**: Same GNN as VariableGraphVAE
+- **Latent**: 32D
+- **Decoder**: Multi-head MLP → 18 parameter outputs (4 core + fillet + holes)
+- **Advantage**: Strong parameter correlations, meaningful edit directions
 
 ### Latent Regressor
 
@@ -294,13 +338,12 @@ Topology: 6-15 faces depending on holes/fillet.
 
 | Script | Purpose |
 |--------|---------|
-| `train_variable_vae.py` | Train variable topology VAE |
+| `train_parameter_vae.py` | **Train ParameterVAE (recommended)** |
+| `train_variable_vae.py` | Train VariableGraphVAE (legacy) |
 | `evaluate_variable_vae.py` | Analyze latent space (collapse, correlations, clustering) |
 | `generate_variable_edit_data.py` | Generate paired edit data for latent editor |
 | `train_latent_editor.py` | Train LLM latent editor with direction classifier |
-| `train_full_latent_regressor.py` | Train z → all params (multi-head with existence) |
-| `train_latent_regressor.py` | Train z → 4 core params only |
-| `train_variable_feature_regressor.py` | Train decoded features → params MLP |
+| `train_full_latent_regressor.py` | Train z → all params (for VariableGraphVAE) |
 | `infer_latent_editor.py` | End-to-end inference with regressor selection |
 
 ### Inference
@@ -361,7 +404,8 @@ python scripts/infer_latent_editor.py \
 
 ## Next Steps
 
-1. **Tune latent editor** — Retrain with `--direction-weight 1.0` (or 2.0) to improve direction accuracy
-2. **End-to-end evaluation** — Test full pipeline: instruction → edited STEP file
-3. **If direction acc reaches ~75%+**: Ready for demo / expansion
-4. **Future**: More complex geometry / multiple part families
+1. **Train ParameterVAE** — Full training run to verify strong parameter correlations
+2. **Generate edit data** — Using ParameterVAE checkpoint
+3. **Train latent editor** — With ParameterVAE, direction_weight=0.5 should work (like fixed topology)
+4. **End-to-end evaluation** — Test full pipeline: instruction → edited STEP file
+5. **Future**: More complex geometry / multiple part families
