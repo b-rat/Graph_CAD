@@ -113,8 +113,8 @@ def compute_param_loss(
 def compute_kl_loss(
     mu: torch.Tensor,
     logvar: torch.Tensor,
-    free_bits: float = 2.0,
-) -> torch.Tensor:
+    free_bits: float = 0.5,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
     Compute KL divergence with free-bits to prevent posterior collapse.
 
@@ -124,16 +124,22 @@ def compute_kl_loss(
         free_bits: Minimum KL per dimension before loss applies
 
     Returns:
-        KL loss (scalar)
+        kl_loss: KL loss after free-bits (used for training)
+        raw_kl: Raw KL before free-bits (for monitoring)
     """
     # KL per dimension: 0.5 * (mu^2 + exp(logvar) - logvar - 1)
     kl_per_dim = 0.5 * (mu.pow(2) + logvar.exp() - logvar - 1)
 
+    # Raw KL (for monitoring)
+    raw_kl = kl_per_dim.sum(dim=1).mean()
+
     # Free-bits: only penalize KL above threshold per dimension
-    kl_per_dim = torch.clamp(kl_per_dim - free_bits, min=0)
+    kl_per_dim_clipped = torch.clamp(kl_per_dim - free_bits, min=0)
 
     # Sum over latent dims, mean over batch
-    return kl_per_dim.sum(dim=1).mean()
+    kl_loss = kl_per_dim_clipped.sum(dim=1).mean()
+
+    return kl_loss, raw_kl
 
 
 def extract_targets(batch, num_graphs: int, device: torch.device) -> dict[str, torch.Tensor]:
@@ -181,7 +187,7 @@ def train_epoch(
 
         # Losses
         param_loss, param_metrics = compute_param_loss(outputs, targets, exist_weight)
-        kl_loss = compute_kl_loss(outputs["mu"], outputs["logvar"], free_bits)
+        kl_loss, raw_kl = compute_kl_loss(outputs["mu"], outputs["logvar"], free_bits)
 
         total_loss = param_loss + beta * kl_loss
 
@@ -193,6 +199,7 @@ def train_epoch(
         metrics = {
             "loss": total_loss.item(),
             "kl_loss": kl_loss.item(),
+            "raw_kl": raw_kl.item(),
             **param_metrics,
         }
         for k, v in metrics.items():
@@ -238,12 +245,13 @@ def evaluate(
         outputs = model(x, face_types, edge_index, edge_attr, batch_idx, node_mask)
 
         param_loss, param_metrics = compute_param_loss(outputs, targets, exist_weight)
-        kl_loss = compute_kl_loss(outputs["mu"], outputs["logvar"], free_bits)
+        kl_loss, raw_kl = compute_kl_loss(outputs["mu"], outputs["logvar"], free_bits)
         total_loss = param_loss + beta * kl_loss
 
         metrics = {
             "loss": total_loss.item(),
             "kl_loss": kl_loss.item(),
+            "raw_kl": raw_kl.item(),
             **param_metrics,
         }
         for k, v in metrics.items():
@@ -361,15 +369,18 @@ def main():
     # Model architecture
     parser.add_argument("--latent-dim", type=int, default=32)
     parser.add_argument("--hidden-dim", type=int, default=64)
-    parser.add_argument("--decoder-hidden-dim", type=int, default=256)
-    parser.add_argument("--decoder-num-layers", type=int, default=3)
+    parser.add_argument("--decoder-hidden-dim", type=int, default=128,
+                        help="Smaller decoder forces more info through latent bottleneck")
+    parser.add_argument("--decoder-num-layers", type=int, default=2)
 
     # Training
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
-    parser.add_argument("--beta", type=float, default=0.01, help="KL weight")
-    parser.add_argument("--free-bits", type=float, default=2.0)
+    parser.add_argument("--beta", type=float, default=0.1,
+                        help="KL weight (higher forces info into latent)")
+    parser.add_argument("--free-bits", type=float, default=0.5,
+                        help="KL threshold per dim (lower = stricter)")
     parser.add_argument("--exist-weight", type=float, default=1.0)
 
     parser.add_argument("--output-dir", type=str, default="outputs/parameter_vae")
