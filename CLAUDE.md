@@ -198,26 +198,35 @@ Actual parameters vary by topology: 4 (plain) to 13 (2 holes/leg + fillet).
 - The powerful decoder bypassed the latent bottleneck
 
 **v2 (Stricter Bottleneck):** Fixed with beta=0.1, free_bits=0.5, decoder=2×128:
+- Raw KL: 11.78 nats (information flowing through z)
+- Correlations: r < 0.11 (still weak)
+- Latent editor trained on v2: **64% direction accuracy** (same ceiling as VariableGraphVAE)
 
-| Metric | v1 | v2 |
+**v3 (Auxiliary Linear Head):** Added `aux_core_head = Linear(32, 4)` with aux_weight=0.1:
+
+| Metric | v2 | v3 |
 |--------|-----|-----|
-| KL loss | 0.0145 | **0.19** |
-| Raw KL | ~0 | **11.78 nats** |
+| Raw KL | 11.78 | 11.94 |
+| Aux loss | — | 0.083 |
 | Core loss | 0.083 | 0.083 |
-| Existence Acc | 100% | 100% |
 
-**Linear Correlations (still weak):**
+**Correlations (no improvement):**
 
-| Parameter | v1 | v2 |
+| Parameter | v2 | v3 |
 |-----------|-----|-----|
-| leg1 | 0.102 | 0.103 |
+| leg1 | 0.102 | 0.089 |
 | leg2 | 0.039 | 0.039 |
-| width | 0.070 | 0.074 |
-| thickness | 0.090 | 0.086 |
+| width | 0.074 | 0.072 |
+| thickness | 0.086 | 0.080 |
 
-**Interpretation:** With 11.78 nats now flowing through z (vs ~0 before), information IS being encoded. However, the decoder learns a *nonlinear* mapping from z to params, so linear (Pearson) correlations remain weak. The latent editor may still learn nonlinear edit directions.
+**Interpretation:** The auxiliary linear head learned (aux_loss = core_loss), but correlations didn't improve. Both linear and nonlinear paths achieve the same prediction quality. The GNN encoder extracts parameters through nonlinear geometry combinations — linear directions may be impossible with this architecture.
 
-**Checkpoint:** `outputs/parameter_vae_v2/best_model.pt`
+**Possible next steps:**
+- Try aux_weight=1.0 to force linear constraint to dominate
+- Different encoder architecture (e.g., direct param extraction)
+- Accept 64% ceiling and focus on other improvements
+
+**Checkpoint:** `outputs/parameter_vae_v3/best_model.pt`
 
 ### Training Commands (Variable Topology)
 
@@ -399,8 +408,9 @@ python scripts/infer_latent_editor.py \
 ## Model Checkpoints
 
 **Current (ParameterVAE approach):**
-- `outputs/parameter_vae_v2/best_model.pt` — ParameterVAE with stricter bottleneck, 11.78 nats ✓
-- `outputs/latent_editor_parameter_vae_v2/` — (pending training)
+- `outputs/parameter_vae_v3/best_model.pt` — ParameterVAE with aux linear head ✓
+- `outputs/parameter_vae_v2/best_model.pt` — ParameterVAE stricter bottleneck ✓
+- `outputs/latent_editor_parameter_vae_v2/best_model.pt` — 64% direction acc (same ceiling)
 
 **Legacy (VariableGraphVAE approach):**
 - `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D)
@@ -426,8 +436,9 @@ python scripts/infer_latent_editor.py \
 
 ## Next Steps
 
-1. ~~**Train ParameterVAE**~~ — Done (v2 with stricter bottleneck, 11.78 nats) ✓
-2. **Train latent editor on ParameterVAE v2** — Test if nonlinear info improves direction accuracy
-3. **End-to-end evaluation** — Test full pipeline: instruction → edited STEP file
-4. **If still stuck**: Consider auxiliary linear head on z for explicit parameter supervision
-5. **Future**: More complex geometry / multiple part families
+1. ~~**Train ParameterVAE v2**~~ — Done, 11.78 nats ✓
+2. ~~**Train latent editor on v2**~~ — Done, 64% accuracy (same ceiling) ✓
+3. ~~**Add auxiliary linear head (v3)**~~ — Done, correlations unchanged ✓
+4. **Try aux_weight=1.0** — Force linear constraint to dominate
+5. **If still stuck**: Consider fundamental architecture change or accept 64% ceiling
+6. **Future**: More complex geometry / multiple part families
