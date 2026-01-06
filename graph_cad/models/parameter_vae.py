@@ -284,6 +284,9 @@ class ParameterVAE(nn.Module):
     forces the latent space to encode parameter information, making
     "increase leg1" a meaningful direction.
 
+    Includes an auxiliary LINEAR head for core params that forces
+    linear organization of the latent space (like aux_weight in fixed topology).
+
     Args:
         config: Model configuration.
     """
@@ -293,6 +296,10 @@ class ParameterVAE(nn.Module):
         self.config = config or ParameterVAEConfig()
         self.encoder = ParameterVAEEncoder(self.config)
         self.decoder = ParameterDecoder(self.config)
+
+        # Auxiliary LINEAR head: z -> 4 core params (no hidden layers)
+        # This forces the latent space to have linear directions for parameters
+        self.aux_core_head = nn.Linear(self.config.latent_dim, 4)
 
     def reparameterize(
         self, mu: torch.Tensor, logvar: torch.Tensor
@@ -336,6 +343,7 @@ class ParameterVAE(nn.Module):
         Returns:
             Dictionary with:
                 - All parameter predictions from decoder
+                - aux_core_params: Linear prediction of core params (for aux loss)
                 - mu, logvar, z (latent space)
         """
         mu, logvar = self.encode(
@@ -344,8 +352,12 @@ class ParameterVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         decoder_output = self.decode(z)
 
+        # Auxiliary linear prediction (forces linear latent organization)
+        aux_core_params = self.aux_core_head(z)
+
         return {
             **decoder_output,
+            "aux_core_params": aux_core_params,
             "mu": mu,
             "logvar": logvar,
             "z": z,

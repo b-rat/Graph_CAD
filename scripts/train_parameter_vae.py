@@ -110,6 +110,19 @@ def compute_param_loss(
     return total_param_loss, metrics
 
 
+def compute_aux_loss(
+    outputs: dict[str, torch.Tensor],
+    targets: dict[str, torch.Tensor],
+) -> torch.Tensor:
+    """
+    Compute auxiliary linear loss for core params.
+
+    This forces the latent space to have LINEAR directions for parameters,
+    which is critical for the latent editor to learn meaningful edit directions.
+    """
+    return F.mse_loss(outputs["aux_core_params"], targets["core_params"])
+
+
 def compute_kl_loss(
     mu: torch.Tensor,
     logvar: torch.Tensor,
@@ -163,6 +176,7 @@ def train_epoch(
     beta: float = 0.01,
     free_bits: float = 2.0,
     exist_weight: float = 1.0,
+    aux_weight: float = 0.1,
 ) -> dict[str, float]:
     """Train for one epoch."""
     model.train()
@@ -188,8 +202,9 @@ def train_epoch(
         # Losses
         param_loss, param_metrics = compute_param_loss(outputs, targets, exist_weight)
         kl_loss, raw_kl = compute_kl_loss(outputs["mu"], outputs["logvar"], free_bits)
+        aux_loss = compute_aux_loss(outputs, targets)
 
-        total_loss = param_loss + beta * kl_loss
+        total_loss = param_loss + beta * kl_loss + aux_weight * aux_loss
 
         # Backward
         total_loss.backward()
@@ -200,6 +215,7 @@ def train_epoch(
             "loss": total_loss.item(),
             "kl_loss": kl_loss.item(),
             "raw_kl": raw_kl.item(),
+            "aux_loss": aux_loss.item(),
             **param_metrics,
         }
         for k, v in metrics.items():
@@ -217,6 +233,7 @@ def evaluate(
     beta: float = 0.01,
     free_bits: float = 2.0,
     exist_weight: float = 1.0,
+    aux_weight: float = 0.1,
 ) -> dict[str, float]:
     """Evaluate model with existence accuracy."""
     model.eval()
@@ -246,12 +263,14 @@ def evaluate(
 
         param_loss, param_metrics = compute_param_loss(outputs, targets, exist_weight)
         kl_loss, raw_kl = compute_kl_loss(outputs["mu"], outputs["logvar"], free_bits)
-        total_loss = param_loss + beta * kl_loss
+        aux_loss = compute_aux_loss(outputs, targets)
+        total_loss = param_loss + beta * kl_loss + aux_weight * aux_loss
 
         metrics = {
             "loss": total_loss.item(),
             "kl_loss": kl_loss.item(),
             "raw_kl": raw_kl.item(),
+            "aux_loss": aux_loss.item(),
             **param_metrics,
         }
         for k, v in metrics.items():
@@ -382,6 +401,8 @@ def main():
     parser.add_argument("--free-bits", type=float, default=0.5,
                         help="KL threshold per dim (lower = stricter)")
     parser.add_argument("--exist-weight", type=float, default=1.0)
+    parser.add_argument("--aux-weight", type=float, default=0.1,
+                        help="Weight for auxiliary LINEAR param prediction (forces linear latent directions)")
 
     parser.add_argument("--output-dir", type=str, default="outputs/parameter_vae")
     parser.add_argument("--device", type=str, default=None)
@@ -451,20 +472,20 @@ def main():
     scheduler = CosineAnnealingLR(optimizer, T_max=args.epochs)
 
     # Training
-    print(f"\nTraining for {args.epochs} epochs (beta={args.beta}, free_bits={args.free_bits})...")
+    print(f"\nTraining for {args.epochs} epochs (beta={args.beta}, free_bits={args.free_bits}, aux_weight={args.aux_weight})...")
     results = {"train": [], "val": []}
     best_val_loss = float("inf")
 
     for epoch in range(1, args.epochs + 1):
         train_metrics = train_epoch(
             model, train_loader, optimizer, device,
-            args.beta, args.free_bits, args.exist_weight
+            args.beta, args.free_bits, args.exist_weight, args.aux_weight
         )
         scheduler.step()
 
         val_metrics = evaluate(
             model, val_loader, device,
-            args.beta, args.free_bits, args.exist_weight
+            args.beta, args.free_bits, args.exist_weight, args.aux_weight
         )
 
         print(
@@ -487,7 +508,7 @@ def main():
     print("\nEvaluating on test set...")
     test_metrics = evaluate(
         model, test_loader, device,
-        args.beta, args.free_bits, args.exist_weight
+        args.beta, args.free_bits, args.exist_weight, args.aux_weight
     )
     results["test"] = test_metrics
 
