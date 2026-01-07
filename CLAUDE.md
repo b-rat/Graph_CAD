@@ -202,31 +202,40 @@ Actual parameters vary by topology: 4 (plain) to 13 (2 holes/leg + fillet).
 - Correlations: r < 0.11 (still weak)
 - Latent editor trained on v2: **64% direction accuracy** (same ceiling as VariableGraphVAE)
 
-**v3 (Auxiliary Linear Head):** Added `aux_core_head = Linear(32, 4)` with aux_weight=0.1:
+**v3 (Auxiliary Linear Head):** Added `aux_core_head = Linear(32, 4)` with aux_weight=0.1
 
-| Metric | v2 | v3 |
-|--------|-----|-----|
-| Raw KL | 11.78 | 11.94 |
-| Aux loss | — | 0.083 |
+**v4 (Strong Linear Constraint):** aux_weight=1.0 (10x higher)
+
+| Metric | v3 (aux=0.1) | v4 (aux=1.0) |
+|--------|--------------|--------------|
+| Raw KL | 11.94 | 12.26 |
+| Aux loss | 0.083 | 0.083 |
 | Core loss | 0.083 | 0.083 |
 
-**Correlations (no improvement):**
+**Correlations (unchanged despite 10x aux_weight):**
 
-| Parameter | v2 | v3 |
+| Parameter | v3 | v4 |
 |-----------|-----|-----|
-| leg1 | 0.102 | 0.089 |
-| leg2 | 0.039 | 0.039 |
-| width | 0.074 | 0.072 |
-| thickness | 0.086 | 0.080 |
+| leg1 | 0.089 | 0.104 |
+| leg2 | 0.039 | 0.030 |
+| width | 0.072 | 0.072 |
+| thickness | 0.080 | 0.083 |
 
-**Interpretation:** The auxiliary linear head learned (aux_loss = core_loss), but correlations didn't improve. Both linear and nonlinear paths achieve the same prediction quality. The GNN encoder extracts parameters through nonlinear geometry combinations — linear directions may be impossible with this architecture.
+### Fundamental Limitation Identified
 
-**Possible next steps:**
-- Try aux_weight=1.0 to force linear constraint to dominate
-- Different encoder architecture (e.g., direct param extraction)
-- Accept 64% ceiling and focus on other improvements
+Even with aux_weight=1.0, correlations remain weak (r ~ 0.03-0.10). This confirms a **fundamental architectural limitation**:
 
-**Checkpoint:** `outputs/parameter_vae_v3/best_model.pt`
+The GNN encoder extracts geometry features (centroids, areas, curvatures) that encode construction parameters through **inherently nonlinear** combinations. "leg1_length" manifests in face positions, areas, and edges in complex ways that cannot be captured by linear directions in z-space — regardless of loss weighting.
+
+**The graph-based latent space encodes *geometry*, not *parameters*.**
+
+**Options going forward:**
+1. **Accept 64% ceiling** for variable topology (still useful)
+2. **Hybrid approach**: Add explicit parameter inputs alongside geometry
+3. **Direct prediction**: Skip latent editing, predict params and regenerate
+4. **Fixed topology**: Use proven 80% approach where applicable
+
+**Checkpoint:** `outputs/parameter_vae_v4/best_model.pt`
 
 ### Training Commands (Variable Topology)
 
@@ -408,14 +417,15 @@ python scripts/infer_latent_editor.py \
 ## Model Checkpoints
 
 **Current (ParameterVAE approach):**
-- `outputs/parameter_vae_v3/best_model.pt` — ParameterVAE with aux linear head ✓
+- `outputs/parameter_vae_v4/best_model.pt` — ParameterVAE aux_weight=1.0 (confirms limitation) ✓
+- `outputs/parameter_vae_v3/best_model.pt` — ParameterVAE aux_weight=0.1 ✓
 - `outputs/parameter_vae_v2/best_model.pt` — ParameterVAE stricter bottleneck ✓
-- `outputs/latent_editor_parameter_vae_v2/best_model.pt` — 64% direction acc (same ceiling)
+- `outputs/latent_editor_parameter_vae_v2/best_model.pt` — 64% direction acc
 
 **Legacy (VariableGraphVAE approach):**
 - `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D)
 - `outputs/full_latent_regressor/best_model.pt` — Multi-head regressor, 100% exist acc
-- `outputs/latent_editor_variable/best_model.pt` — 64% direction acc (ceiling hit)
+- `outputs/latent_editor_variable/best_model.pt` — 64% direction acc
 
 **Legacy (Fixed Topology):**
 - `outputs/vae_aux/best_model.pt` — Fixed topology VAE with aux loss (16D)
@@ -437,8 +447,8 @@ python scripts/infer_latent_editor.py \
 ## Next Steps
 
 1. ~~**Train ParameterVAE v2**~~ — Done, 11.78 nats ✓
-2. ~~**Train latent editor on v2**~~ — Done, 64% accuracy (same ceiling) ✓
+2. ~~**Train latent editor on v2**~~ — Done, 64% accuracy ✓
 3. ~~**Add auxiliary linear head (v3)**~~ — Done, correlations unchanged ✓
-4. **Try aux_weight=1.0** — Force linear constraint to dominate
-5. **If still stuck**: Consider fundamental architecture change or accept 64% ceiling
+4. ~~**Try aux_weight=1.0 (v4)**~~ — Done, confirms fundamental limitation ✓
+5. **Decision point**: Accept 64% or try alternative approaches (hybrid, direct prediction)
 6. **Future**: More complex geometry / multiple part families
