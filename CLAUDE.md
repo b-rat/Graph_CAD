@@ -199,13 +199,72 @@ LLM hidden (4096D) → MLP (4096→256→64→1) → direction_logit
 ```
 The auxiliary direction head is trained with BCE loss to predict increase (1) vs decrease (0). At 63.5%, it's barely better than random (50%), confirming the hidden state can't encode direction reliably.
 
-**Root Cause:** The GNN encoder extracts geometry features that encode parameters through **nonlinear** combinations. "leg1_length" manifests in face positions, areas, and edges in complex ways — no linear direction in z-space exists.
-
 **Comparison to Fixed Topology:**
 - Fixed VAE used `aux_weight=0.1` → parameters encoded in latent → 80% direction acc
 - Variable VAE (any approach) → geometry encoded, not params → 64% ceiling
 
-### Solution: ParameterVAE
+### Key Discovery: Z-Space DOES Encode Parameters (Jan 2026)
+
+Correlation analysis on 13D VAE revealed **strong linear correlations**:
+
+| Parameter | Best Z Dimension | Correlation |
+|-----------|------------------|-------------|
+| leg1_length | dim 5 | r = **-0.982** |
+| leg2_length | dim 22 | r = **+0.926** |
+| width | dim 10 | r = **-0.743** |
+| thickness | dim 12 | r = -0.298 |
+| bbox_diagonal | dim 21 | r = **-0.980** |
+
+The 13D features (with bbox info) allow the VAE to encode absolute scale. **The problem isn't z-space — it's the LLM interface.**
+
+**Root Cause Refined:**
+
+The LLM receives z as projected tokens but can't extract parameter values from them:
+```
+LLM sees: [abstract z tokens] + "increase leg1 by 20mm"
+LLM doesn't know: leg1 is currently 80mm
+LLM can't compute: correct z_delta
+```
+
+The numerical reasoning ("increase by 20mm") is too complex to learn through z-token projection.
+
+### Solution: Simplified Directional Instructions (Jan 2026)
+
+Remove numerical reasoning burden. Instead of:
+```
+"increase leg1 by 17.3mm" → z_delta (varies by magnitude)
+```
+
+Use simple directional instructions:
+```
+"make leg1 longer" → z_delta (fixed 15% proportional change)
+```
+
+**Advantages:**
+1. LLM leverages pre-trained language understanding ("longer" = increase)
+2. Consistent z_delta for same instruction (since z strongly encodes leg1)
+3. Direction is explicit in text — no classifier needed
+4. More like classification than regression
+
+**Training:**
+```bash
+# Generate simplified edit data
+python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_13d/best_model.pt \
+    --num-samples 50000 --delta-fraction 0.15 \
+    --output data/simple_edit_data
+
+# Train without direction classifier (direction explicit in instruction)
+python scripts/train_latent_editor.py \
+    --data-dir data/simple_edit_data \
+    --latent-dim 32 --direction-weight 0 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_simple
+```
+
+**Status:** Training in progress
+
+### Legacy: ParameterVAE
 
 Instead of decoding to graph features, decode directly to parameters. This forces the latent space to encode parameter information.
 
@@ -451,8 +510,9 @@ Topology: 6-15 faces depending on holes/fillet.
 | Script | Purpose |
 |--------|---------|
 | `train_variable_vae.py` | **Train VariableGraphVAE with 13D features (recommended)** |
-| `generate_variable_edit_data.py` | Generate paired edit data for latent editor |
-| `train_latent_editor.py` | Train LLM latent editor with direction classifier |
+| `generate_simple_edit_data.py` | **Generate simplified directional edit data (recommended)** |
+| `generate_variable_edit_data.py` | Generate numerical edit data (legacy) |
+| `train_latent_editor.py` | Train LLM latent editor |
 | `evaluate_variable_vae.py` | Analyze latent space (collapse, correlations, clustering) |
 | `infer_latent_editor.py` | End-to-end inference with geometric solver |
 | `train_parameter_vae.py` | Train ParameterVAE (legacy - 64% ceiling) |
@@ -533,5 +593,7 @@ python scripts/infer_latent_editor.py \
 6. ~~**Retrain VariableGraphVAE with 13D features**~~ — Done, 100% accuracy, 0.0041 centroid loss ✓
 7. ~~**Generate edit data using 13D VAE**~~ — Done ✓
 8. ~~**Train latent editor on 13D edit data**~~ — Done, 63.5% accuracy (same ceiling) ✓
-9. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
-10. **Future**: More complex geometry / multiple part families
+9. ~~**Discover z-space encodes params (r=0.98)**~~ — Problem is LLM interface, not z-space ✓
+10. **Train latent editor with simplified instructions** — In progress (no numerical reasoning)
+11. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
+12. **Future**: Context-dependent instructions ("fit M8 bolt", "make legs equal")
