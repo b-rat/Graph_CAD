@@ -22,6 +22,8 @@ apt-get update && apt-get install -y git-lfs && git lfs install && git lfs pull
 pip install -r requirements-cloud-gpu.txt && pip install -e . && pip install hf_transfer
 echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc # changes default download for hugging face to network volume
 source ~/.bashrc            # re-read bash file
+apt update && apt install tmux -y
+apt-get update && apt-get install -y libxrender1 libxext6
 git add -f outputs/latent_editor/best_model.pt
 git add -f outputs/latent_editor/training_results.json
 git commit -m "Add trained latent editor checkpoint"
@@ -29,8 +31,6 @@ git push
 git reset                   #unstage everything add file name to unstage single file
 git reset --soft HEAD~1     #keep changes staged remove commit one commit back
 git reset HEAD~1            #remove commit and unstage
-apt update && apt install tmux -y
-apt-get update && apt-get install -y libxrender1 libxext6
 ```
 
 ```bash
@@ -334,4 +334,69 @@ python scripts/train_full_latent_regressor.py \
     --cache-dir data/full_latent_regressor_cache \
     --output-dir outputs/full_latent_regressor \
     --device cuda
+```
+
+```bash
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_variable \
+    --latent-dim 32 --direction-weight 1.0 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_variable_dw1
+```
+
+```bash
+python scripts/train_parameter_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/parameter_vae
+```
+
+```bash
+python scripts/train_parameter_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/parameter_vae_v2
+```
+
+```bash
+python scripts/generate_variable_edit_data.py \
+    --vae-checkpoint outputs/parameter_vae_v2/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data_parameter_vae_v2 && \
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_parameter_vae_v2 \
+    --latent-dim 32 --direction-weight 0.5 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_parameter_vae_v2
+```
+
+```bash
+python scripts/train_parameter_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --aux-weight 0.1 \
+    --output-dir outputs/parameter_vae_v3
+```
+
+```bash
+python scripts/train_parameter_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --aux-weight 1.0 \
+    --output-dir outputs/parameter_vae_v4
+```
+
+```bash
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/vae_variable_13d && \
+python scripts/generate_variable_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_13d/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data_variable_13d && \
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_variable_13d \
+    --latent-dim 32 --direction-weight 0.5 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_variable_13d
 ```
