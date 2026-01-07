@@ -91,7 +91,7 @@ def encode_bracket(
     num_edges = graph.edge_features.shape[0]
 
     # Pad node features
-    x = np.zeros((max_nodes, 9), dtype=np.float32)
+    x = np.zeros((max_nodes, 13), dtype=np.float32)  # 13D: area, dir, centroid, curv, bbox_diag, bbox_center
     x[:num_nodes] = graph.node_features
 
     # Pad face types
@@ -120,7 +120,7 @@ def encode_bracket(
     batch_t = torch.zeros(max_nodes, dtype=torch.long, device=device)
 
     # Flatten for encoder (it expects flattened batch format)
-    x_flat = x_t.view(-1, 9)
+    x_flat = x_t.view(-1, 13)
     face_types_flat = face_types_t.view(-1)
     node_mask_flat = node_mask_t.view(-1)
 
