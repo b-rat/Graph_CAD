@@ -56,14 +56,16 @@ class BRepGraph:
 
     Supports two modes:
     - Fixed topology (original): face_type embedded in node_features, face_types is None
-    - Variable topology: face_types separate, node_features includes curvature
+    - Variable topology: face_types separate, node_features includes curvature + bbox info
 
     Attributes:
         node_features: Node feature matrix.
             Fixed topology: shape (num_faces, 8)
                 Columns: [face_type, area, dir_x, dir_y, dir_z, cx, cy, cz]
-            Variable topology: shape (num_faces, 9)
-                Columns: [area, dir_x, dir_y, dir_z, cx, cy, cz, curv1, curv2]
+            Variable topology: shape (num_faces, 13)
+                Columns: [area, dir_x, dir_y, dir_z, cx, cy, cz, curv1, curv2,
+                          bbox_diagonal, bbox_center_x, bbox_center_y, bbox_center_z]
+                bbox values are normalized by 100mm reference and broadcast to all nodes.
         face_types: Face type indices for embedding lookup (variable topology only).
             Shape (num_faces,), values 0-7 corresponding to face type codes.
             None for fixed topology mode.
@@ -71,7 +73,7 @@ class BRepGraph:
             Each column [i, j] represents an edge between face i and face j.
         edge_features: Edge feature matrix, shape (num_edges, 2).
             Columns: [edge_length, dihedral_angle]
-        bbox_diagonal: Bounding box diagonal used for normalization.
+        bbox_diagonal: Bounding box diagonal used for normalization (raw, in mm).
         bbox_center: Bounding box center used for normalization, shape (3,).
         num_faces: Number of faces (nodes) in the graph.
         num_edges: Number of edges in the graph.
@@ -493,12 +495,18 @@ def extract_graph_from_solid_variable(solid: cq.Workplane) -> BRepGraph:
 
     Differences from extract_graph_from_solid:
     - face_types is a separate integer array (for embedding lookup)
-    - node_features includes curvature (9D instead of 8D)
+    - node_features includes curvature, bbox_diagonal, and bbox_center (13D)
     - node_features excludes face_type (moved to face_types)
     - variable_topology flag is set to True
+    - bbox info is included in node features for scale-aware reconstruction
 
-    Node features (9D):
-        [area, dir_x, dir_y, dir_z, cx, cy, cz, curv1, curv2]
+    Node features (13D):
+        [area, dir_x, dir_y, dir_z, cx, cy, cz, curv1, curv2,
+         bbox_diagonal, bbox_center_x, bbox_center_y, bbox_center_z]
+
+    The bbox_diagonal and bbox_center are broadcast to all nodes, enabling
+    the decoder to reconstruct absolute positions. This allows deterministic
+    parameter extraction via geometric solving after VAE decoding.
 
     Args:
         solid: CadQuery Workplane containing the solid.
@@ -535,8 +543,13 @@ def extract_graph_from_solid_variable(solid: cq.Workplane) -> BRepGraph:
     if bbox_diagonal < 1e-10:
         bbox_diagonal = 1.0  # Avoid division by zero for degenerate geometry
 
-    # Extract node features for each face (9D: no face_type, includes curvature)
-    node_features = np.zeros((num_faces, 9), dtype=np.float32)
+    # Normalize bbox values for consistent scale across dataset
+    # Use 100mm as reference scale (typical L-bracket size)
+    bbox_diagonal_normalized = bbox_diagonal / 100.0
+    bbox_center_normalized = bbox_center / 100.0
+
+    # Extract node features for each face (13D: includes curvature, bbox_diagonal, bbox_center)
+    node_features = np.zeros((num_faces, 13), dtype=np.float32)
     face_types = np.zeros(num_faces, dtype=np.int64)
     face_normals = []  # Store for dihedral angle computation
 
@@ -559,12 +572,14 @@ def extract_graph_from_solid_variable(solid: cq.Workplane) -> BRepGraph:
         curv1_normalized = np.clip(curv1_normalized, -10.0, 10.0)
         curv2_normalized = np.clip(curv2_normalized, -10.0, 10.0)
 
-        # Node features: [area, dir_xyz, centroid_xyz, curvatures]
+        # Node features: [area, dir_xyz, centroid_xyz, curvatures, bbox_diagonal, bbox_center_xyz]
         node_features[i, 0] = area_normalized
         node_features[i, 1:4] = normal
         node_features[i, 4:7] = centroid_normalized
         node_features[i, 7] = curv1_normalized
         node_features[i, 8] = curv2_normalized
+        node_features[i, 9] = bbox_diagonal_normalized  # Same for all nodes
+        node_features[i, 10:13] = bbox_center_normalized  # Same for all nodes
 
         # Face type as separate array
         face_types[i] = face_type

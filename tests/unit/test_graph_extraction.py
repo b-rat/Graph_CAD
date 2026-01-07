@@ -300,19 +300,19 @@ class TestExtractGraphFromSolidVariable:
         assert graph.num_faces >= 8
 
     def test_node_features_shape(self, variable_bracket_minimal):
-        """Node features should have shape (num_faces, 9)."""
+        """Node features should have shape (num_faces, 13)."""
         solid = variable_bracket_minimal.to_solid()
         graph = extract_graph_from_solid_variable(solid)
-        # 9 features per node
-        assert graph.node_features.shape[1] == 9
+        # 13 features per node: area(1), dir(3), centroid(3), curv(2), bbox_diag(1), bbox_center(3)
+        assert graph.node_features.shape[1] == 13
         assert graph.node_features.shape[0] == graph.num_faces
 
     def test_node_features_include_curvature(self, variable_bracket_with_holes):
         """Node features should include curvature values."""
         solid = variable_bracket_with_holes.to_solid()
         graph = extract_graph_from_solid_variable(solid)
-        # Features: area(1), direction(3), centroid(3), curv1(1), curv2(1) = 9
-        assert graph.node_features.shape[1] == 9
+        # Features: area(1), direction(3), centroid(3), curv1(1), curv2(1), bbox(4) = 13
+        assert graph.node_features.shape[1] == 13
         # Curvatures are in columns 7 and 8
         curvatures = graph.node_features[:, 7:9]
         assert curvatures.shape == (graph.num_faces, 2)
@@ -397,8 +397,8 @@ class TestVariableTopologyVariety:
 
             # Should have at least 6 faces
             assert graph.num_faces >= 6
-            # Node features should be 9D
-            assert graph.node_features.shape[1] == 9
+            # Node features should be 13D (including bbox_diagonal and bbox_center)
+            assert graph.node_features.shape[1] == 13
             # Face types should match num_faces
             assert graph.face_types.shape[0] == graph.num_faces
             # Should have some edges

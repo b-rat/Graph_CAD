@@ -37,19 +37,38 @@ black graph_cad tests && ruff check graph_cad tests && mypy graph_cad
 
 ## Architecture Overview
 
-### System Pipeline
+### System Pipeline (Current: Geometric Solver)
 
 ```
-Input STEP → Graph Extraction → VAE Encode → Latent (32D)
-                                                ↓
-                            LLM Latent Editor (instruction)
-                                                ↓
-                                         Edited Latent
-                                                ↓
-                         LatentRegressor → 4 Core Parameters
-                                                ↓
-                          VariableLBracket → Output STEP
+Input STEP → Graph Extraction (13D features) → VAE Encode → Latent (32D)
+                                                              ↓
+                                         LLM Latent Editor (instruction)
+                                                              ↓
+                                                       Edited Latent
+                                                              ↓
+                                    VAE Decode → Reconstructed Graph Features
+                                                              ↓
+                                    Geometric Solver → All Parameters (deterministic)
+                                                              ↓
+                                         VariableLBracket → Output STEP
 ```
+
+**Key Insight**: Instead of learning parameter regression, we use deterministic geometric solving. The VAE reconstructs graph features (face areas, centroids, normals), and the geometric solver extracts exact parameters from these features using geometric relationships.
+
+### Node Features (13D)
+
+```
+[area, dir_x, dir_y, dir_z, cx, cy, cz, curv1, curv2, bbox_diagonal, bbox_cx, bbox_cy, bbox_cz]
+```
+
+- `area`: Face area normalized by bbox_diagonal²
+- `dir_xyz`: Face normal/axis direction (unit vector)
+- `cx, cy, cz`: Centroid normalized as (centroid - bbox_center) / bbox_diagonal
+- `curv1, curv2`: Principal curvatures normalized by bbox_diagonal
+- `bbox_diagonal`: Bounding box diagonal / 100mm (same for all nodes)
+- `bbox_cx, bbox_cy, bbox_cz`: Bounding box center / 100mm (same for all nodes)
+
+The bbox values enable scale-aware reconstruction and deterministic de-normalization.
 
 ### Two-Phase Approach
 
@@ -60,8 +79,8 @@ Input STEP → Graph Extraction → VAE Encode → Latent (32D)
 
 2. **Phase 2 (In Progress)**: Variable Topology
    - L-brackets with 0-4 holes, optional fillets, 6-15 faces
-   - 32D latent, 4 core parameters + fillet + holes
-   - VAE trained ✓, Full Latent Regressor trained ✓, Latent Editor 64% (tuning)
+   - 32D latent, 13D node features
+   - VAE trained ✓, Geometric Solver implemented ✓
 
 ---
 
@@ -229,13 +248,35 @@ The GNN encoder extracts geometry features (centroids, areas, curvatures) that e
 
 **The graph-based latent space encodes *geometry*, not *parameters*.**
 
-**Options going forward:**
-1. **Accept 64% ceiling** for variable topology (still useful)
-2. **Hybrid approach**: Add explicit parameter inputs alongside geometry
-3. **Direct prediction**: Skip latent editing, predict params and regenerate
-4. **Fixed topology**: Use proven 80% approach where applicable
+**Solution: Geometric Solver (Jan 2026)**
 
-**Checkpoint:** `outputs/parameter_vae_v4/best_model.pt`
+Instead of learning to predict parameters from a nonlinearly-encoded latent, we implemented a **deterministic geometric solver** that extracts parameters directly from decoded graph features:
+
+```python
+from graph_cad.utils.geometric_solver import solve_params_from_features
+
+# After VAE decoding
+params = solve_params_from_features(
+    node_features=decoded_features,  # (num_nodes, 13)
+    face_types=predicted_face_types,  # (num_nodes,)
+    edge_index=decoded_edges,
+    edge_features=decoded_edge_features,
+)
+# Returns SolvedParams with leg1, leg2, width, thickness, fillet, holes
+```
+
+**Geometric Solver Accuracy (on ground truth features):**
+
+| Parameter | Error |
+|-----------|-------|
+| Core params (leg1, leg2, width, thickness) | **0%** (exact) |
+| Fillet radius | **0%** (exact) |
+| Hole diameters | **0%** (exact) |
+| Hole distances | **~2mm** (centroid precision) |
+
+This approach sidesteps the 64% ceiling entirely by not requiring the latent to encode parameters linearly. The VAE just needs to reconstruct geometry accurately; the solver handles parameter extraction deterministically.
+
+**Legacy checkpoints:** `outputs/parameter_vae_v4/best_model.pt`
 
 ### Training Commands (Variable Topology)
 
@@ -349,25 +390,40 @@ Topology: 6-15 faces depending on holes/fillet.
 | 1 | HOLE | Cylinder with arc ≥ 180° |
 | 2 | FILLET | Cylinder with arc < 180°, or torus |
 
-### VariableGraphVAE (Legacy)
+### VariableGraphVAE (Recommended with Geometric Solver)
 
 - **Encoder**: GNN with face type embeddings, attention pooling
 - **Latent**: 32D
-- **Decoder**: MLP → node features + edge features + masks + face type logits
-- **Limitation**: Weak parameter correlations (r<0.12)
+- **Decoder**: MLP → node features (13D) + edge features + masks + face type logits
+- **Node features**: area, dir_xyz, centroid_xyz, curvatures, bbox_diagonal, bbox_center_xyz
+- **Usage**: Decode to features, then use Geometric Solver for parameters
 
-### ParameterVAE (Recommended)
+### Geometric Solver
+
+- **Input**: Decoded node features (13D), face types, edge features
+- **Output**: All L-bracket parameters (deterministic)
+- **Algorithm**:
+  1. De-normalize using bbox_diagonal and bbox_center
+  2. Identify face roles by normal directions (Y-facing = front/back, etc.)
+  3. Core params: From face centroids and areas
+  4. Holes: From HOLE face areas (π×d×thickness) and centroids
+  5. Fillet: From FILLET face area ((π/2)×r×width)
+- **Accuracy**: Exact for all parameters (within ~2mm for hole distances)
+- **Location**: `graph_cad/utils/geometric_solver.py`
+
+### ParameterVAE (Legacy - Limited by 64% ceiling)
 
 - **Encoder**: Same GNN as VariableGraphVAE
 - **Latent**: 32D
 - **Decoder**: Multi-head MLP → 18 parameter outputs (4 core + fillet + holes)
-- **Advantage**: Strong parameter correlations, meaningful edit directions
+- **Limitation**: Latent editor accuracy capped at 64% due to nonlinear encoding
 
-### Latent Regressor
+### Latent Regressor (Legacy)
 
 - **Input**: z (32D)
 - **Architecture**: MLP (32 → 256 → 128 → 64 → 4)
 - **Output**: Normalized [leg1, leg2, width, thickness]
+- **Note**: Superseded by Geometric Solver for deterministic reconstruction
 
 ---
 
@@ -450,5 +506,7 @@ python scripts/infer_latent_editor.py \
 2. ~~**Train latent editor on v2**~~ — Done, 64% accuracy ✓
 3. ~~**Add auxiliary linear head (v3)**~~ — Done, correlations unchanged ✓
 4. ~~**Try aux_weight=1.0 (v4)**~~ — Done, confirms fundamental limitation ✓
-5. **Decision point**: Accept 64% or try alternative approaches (hybrid, direct prediction)
-6. **Future**: More complex geometry / multiple part families
+5. ~~**Implement Geometric Solver**~~ — Done, exact parameter extraction ✓
+6. **Retrain VariableGraphVAE** with 13D features (bbox_diagonal + bbox_center)
+7. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
+8. **Future**: More complex geometry / multiple part families

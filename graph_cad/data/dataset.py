@@ -305,8 +305,8 @@ class VariableLBracketDataset(Dataset):
                 f"Graph has {num_edges} edges, exceeds max_edges={self.max_edges}"
             )
 
-        # Pad node features to max_nodes
-        node_features = np.zeros((self.max_nodes, 9), dtype=np.float32)
+        # Pad node features to max_nodes (13D: area, dir_xyz, centroid_xyz, curvatures, bbox_diagonal, bbox_center_xyz)
+        node_features = np.zeros((self.max_nodes, 13), dtype=np.float32)
         node_features[:num_nodes] = graph.node_features
 
         # Pad face types to max_nodes (use 0 for padding, will be masked)

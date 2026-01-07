@@ -94,7 +94,7 @@ class TestVariableLBracketDataset:
         )
         data = dataset.get(0)
 
-        assert data.x.shape == (max_nodes, 9)
+        assert data.x.shape == (max_nodes, 13)  # 13D: area, dir, centroid, curv, bbox
         assert data.face_types.shape == (max_nodes,)
         assert data.edge_attr.shape == (max_edges, 2)
         assert data.node_mask.shape == (max_nodes,)
@@ -256,7 +256,7 @@ class TestVariableDataLoaders:
         batch = next(iter(train_loader))
 
         # In PyG batching, x is flattened: (batch_size * max_nodes, features)
-        assert batch.x.shape == (batch_size * max_nodes, 9)
+        assert batch.x.shape == (batch_size * max_nodes, 13)  # 13D features
         assert batch.face_types.shape == (batch_size * max_nodes,)
         assert batch.node_mask.shape == (batch_size * max_nodes,)
         # y is flattened in PyG batching, need to reshape

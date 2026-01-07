@@ -376,7 +376,7 @@ class VariableGraphVAEConfig:
     """Configuration for Variable Topology Graph VAE."""
 
     # Input dimensions (variable topology)
-    node_features: int = 9  # area, dir_xyz, centroid_xyz, curvatures (no face_type)
+    node_features: int = 13  # area, dir_xyz, centroid_xyz, curvatures, bbox_diagonal, bbox_center_xyz
     edge_features: int = 2  # edge_length, dihedral_angle
     num_face_types: int = 3  # PLANAR=0, HOLE=1, FILLET=2 (see CLAUDE.md)
     face_embed_dim: int = 8  # Dimension of face type embeddings

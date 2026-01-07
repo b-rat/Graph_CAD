@@ -376,7 +376,7 @@ class TestEndToEnd:
 def variable_config():
     """Create default variable VAE config."""
     return VariableGraphVAEConfig(
-        node_features=9,
+        node_features=13,  # area, dir, centroid, curv, bbox_diag, bbox_center
         edge_features=2,
         num_face_types=8,
         face_embed_dim=8,
@@ -429,7 +429,7 @@ class TestVariableGraphVAEConfig:
     def test_default_config(self):
         """Default config should have expected values."""
         config = VariableGraphVAEConfig()
-        assert config.node_features == 9
+        assert config.node_features == 13  # area, dir, centroid, curv, bbox_diag, bbox_center
         assert config.edge_features == 2
         assert config.num_face_types == 3  # PLANAR, HOLE, FILLET
         assert config.face_embed_dim == 8
