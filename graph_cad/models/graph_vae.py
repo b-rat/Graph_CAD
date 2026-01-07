@@ -431,7 +431,7 @@ class VariableGraphVAEEncoder(nn.Module):
         )
 
         # Input dimension: continuous features + face embedding
-        input_dim = config.node_features + config.face_embed_dim  # 9 + 8 = 17
+        input_dim = config.node_features + config.face_embed_dim  # 13 + 8 = 21
 
         # Node encoder
         self.node_encoder = nn.Sequential(

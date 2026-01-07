@@ -50,7 +50,7 @@ class VariableFeatureRegressorConfig:
     # Input: flattened VAE decoder output
     max_nodes: int = 20
     max_edges: int = 50
-    node_features: int = 9
+    node_features: int = 13  # area, dir_xyz, centroid_xyz, curv, bbox_diagonal, bbox_center_xyz
     edge_features: int = 2
     # Architecture
     hidden_dims: tuple[int, ...] = (512, 256, 128, 64)

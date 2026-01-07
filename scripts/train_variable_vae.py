@@ -332,7 +332,7 @@ def main():
 
     # Create model
     config = VariableGraphVAEConfig(
-        node_features=9,
+        node_features=13,  # area, dir_xyz, centroid_xyz, curv, bbox_diagonal, bbox_center_xyz
         edge_features=2,
         num_face_types=8,
         face_embed_dim=args.face_embed_dim,
