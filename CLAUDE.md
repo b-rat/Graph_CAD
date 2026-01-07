@@ -173,19 +173,37 @@ z (32D) → MLP backbone → Multi-head output:
 
 ### Latent Editor — 64% Ceiling Problem
 
-**Results across direction_weight values:**
+**Results across approaches:**
 
-| direction_weight | Direction Acc | Plateau Epoch |
-|------------------|---------------|---------------|
-| 0.5 | 64.3% | ~5 |
-| 1.0 | 64% | ~3 |
-| 2.0 | 63.8% | ~3 |
+| Approach | Direction Acc | Notes |
+|----------|---------------|-------|
+| 9D VAE (direction_weight=0.5) | 64.3% | Original |
+| 9D VAE (direction_weight=1.0) | 64.0% | Higher weight didn't help |
+| ParameterVAE v2 | 64.0% | Different decoder didn't help |
+| **13D VAE + Geometric Solver** | **63.5%** | Same ceiling persists |
 
-**Root Cause:** The VariableGraphVAE decodes to **graph features** (centroids, areas, normals), not parameters. The latent space encodes geometry, but parameters are only weakly correlated (r<0.12). "Make leg1 longer" has no consistent direction in z-space.
+**13D Latent Editor Training (Jan 2026):**
+
+| Epoch | Direction Accuracy |
+|-------|-------------------|
+| 1 | 36.1% |
+| 2 | 62.9% (rapid rise) |
+| 3-20 | 63.0-63.8% (plateau) |
+| **Final** | **63.5%** |
+
+**Why 13D features didn't help:** The geometric solver extracts exact parameters from *decoded features*, but doesn't change how the latent space encodes information. The LLM still can't determine which direction to push z because "make leg1 longer" has no consistent direction in z-space.
+
+**Direction Classifier Architecture:**
+```
+LLM hidden (4096D) → MLP (4096→256→64→1) → direction_logit
+```
+The auxiliary direction head is trained with BCE loss to predict increase (1) vs decrease (0). At 63.5%, it's barely better than random (50%), confirming the hidden state can't encode direction reliably.
+
+**Root Cause:** The GNN encoder extracts geometry features that encode parameters through **nonlinear** combinations. "leg1_length" manifests in face positions, areas, and edges in complex ways — no linear direction in z-space exists.
 
 **Comparison to Fixed Topology:**
 - Fixed VAE used `aux_weight=0.1` → parameters encoded in latent → 80% direction acc
-- Variable VAE used `aux_weight=0.0` → geometry encoded, not params → 64% ceiling
+- Variable VAE (any approach) → geometry encoded, not params → 64% ceiling
 
 ### Solution: ParameterVAE
 
@@ -475,7 +493,7 @@ python scripts/infer_latent_editor.py \
 
 **Current (13D Features + Geometric Solver):**
 - `outputs/vae_variable_13d/best_model.pt` — VariableGraphVAE with 13D features ✓
-- `outputs/latent_editor_13d/best_model.pt` — (pending training)
+- `outputs/latent_editor_variable_13d/best_model.pt` — 63.5% direction accuracy ✓
 
 **Legacy (ParameterVAE approach - 64% ceiling):**
 - `outputs/parameter_vae_v4/best_model.pt` — ParameterVAE aux_weight=1.0
@@ -513,7 +531,7 @@ python scripts/infer_latent_editor.py \
 4. ~~**Try aux_weight=1.0 (v4)**~~ — Done, confirms fundamental limitation ✓
 5. ~~**Implement Geometric Solver**~~ — Done, exact parameter extraction ✓
 6. ~~**Retrain VariableGraphVAE with 13D features**~~ — Done, 100% accuracy, 0.0041 centroid loss ✓
-7. **Generate edit data** using 13D VAE
-8. **Train latent editor** on 13D edit data
+7. ~~**Generate edit data using 13D VAE**~~ — Done ✓
+8. ~~**Train latent editor on 13D edit data**~~ — Done, 63.5% accuracy (same ceiling) ✓
 9. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
 10. **Future**: More complex geometry / multiple part families
