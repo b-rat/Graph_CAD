@@ -86,7 +86,7 @@ The bbox values enable scale-aware reconstruction and deterministic de-normaliza
 
 ## Current Status: Variable Topology (Jan 2026)
 
-### Variable Topology VAE — Training Complete ✓
+### Variable Topology VAE (13D Features) — Training Complete ✓
 
 **Test Metrics:**
 
@@ -95,10 +95,12 @@ The bbox values enable scale-aware reconstruction and deterministic de-normaliza
 | Node Mask Accuracy | 100% | Perfect topology prediction |
 | Edge Mask Accuracy | 100% | Perfect topology prediction |
 | Face Type Accuracy | 100% | Perfect PLANAR/HOLE/FILLET classification |
-| Reconstruction Loss | 0.0173 | Low |
+| Reconstruction Loss | 0.0162 | Low |
+| Centroid Loss | 0.0041 | Low (critical for geometric solver) |
 | Active Latent Dims | 32/32 (100%) | No dimension collapse |
+| KL from Prior | 52.4 nats | Good information flow |
 
-**Checkpoint:** `outputs/vae_variable/best_model.pt`
+**Checkpoint:** `outputs/vae_variable_13d/best_model.pt`
 
 ### Latent Space Analysis
 
@@ -278,42 +280,41 @@ This approach sidesteps the 64% ceiling entirely by not requiring the latent to 
 
 **Legacy checkpoints:** `outputs/parameter_vae_v4/best_model.pt`
 
-### Training Commands (Variable Topology)
+### Training Commands (Variable Topology with Geometric Solver)
 
 ```bash
-# ParameterVAE v2 (stricter bottleneck - recommended)
+# 1. Train VariableGraphVAE with 13D features (recommended)
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/vae_variable_13d
+
+# 2. Generate edit data using 13D VAE
+python scripts/generate_variable_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_13d/best_model.pt \
+    --num-samples 50000 \
+    --output data/edit_data_13d
+
+# 3. Train latent editor
+python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_13d \
+    --latent-dim 32 --direction-weight 0.5 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_13d
+```
+
+**Legacy (ParameterVAE approach - limited by 64% ceiling):**
+```bash
 python scripts/train_parameter_vae.py \
     --train-size 5000 --val-size 500 --test-size 500 \
     --epochs 100 --latent-dim 32 \
     --output-dir outputs/parameter_vae_v2
-
-# Generate edit data (auto-detects VAE type from checkpoint)
-python scripts/generate_variable_edit_data.py \
-    --vae-checkpoint outputs/parameter_vae_v2/best_model.pt \
-    --num-samples 50000 \
-    --output data/edit_data_parameter_vae_v2
-
-# Train latent editor (same script for both VAE types)
-python scripts/train_latent_editor.py \
-    --data-dir data/edit_data_parameter_vae_v2 \
-    --latent-dim 32 --direction-weight 0.5 \
-    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
-    --output-dir outputs/latent_editor_parameter_vae_v2
 ```
 
-**Legacy (VariableGraphVAE approach):**
+**Legacy (VariableGraphVAE 9D approach):**
 ```bash
-# Original VAE (weak parameter correlations)
-python scripts/train_variable_vae.py \
-    --train-size 5000 --val-size 500 --test-size 500 \
-    --epochs 100 --latent-dim 32 \
-    --output-dir outputs/vae_variable
-
-# Full Latent Regressor (for z → params after VAE)
-python scripts/train_full_latent_regressor.py \
-    --vae-checkpoint outputs/vae_variable/best_model.pt \
-    --train-size 10000 --epochs 100 \
-    --output-dir outputs/full_latent_regressor
+# Original VAE (9D features, no geometric solver support)
+# Superseded by 13D version above
 ```
 
 ---
@@ -431,13 +432,13 @@ Topology: 6-15 faces depending on holes/fillet.
 
 | Script | Purpose |
 |--------|---------|
-| `train_parameter_vae.py` | **Train ParameterVAE (recommended)** |
-| `train_variable_vae.py` | Train VariableGraphVAE (legacy) |
-| `evaluate_variable_vae.py` | Analyze latent space (collapse, correlations, clustering) |
-| `generate_variable_edit_data.py` | Generate paired edit data (auto-detects ParameterVAE or VariableGraphVAE) |
+| `train_variable_vae.py` | **Train VariableGraphVAE with 13D features (recommended)** |
+| `generate_variable_edit_data.py` | Generate paired edit data for latent editor |
 | `train_latent_editor.py` | Train LLM latent editor with direction classifier |
-| `train_full_latent_regressor.py` | Train z → all params (for VariableGraphVAE) |
-| `infer_latent_editor.py` | End-to-end inference with regressor selection |
+| `evaluate_variable_vae.py` | Analyze latent space (collapse, correlations, clustering) |
+| `infer_latent_editor.py` | End-to-end inference with geometric solver |
+| `train_parameter_vae.py` | Train ParameterVAE (legacy - 64% ceiling) |
+| `train_full_latent_regressor.py` | Train z → all params (legacy) |
 
 ### Inference
 
@@ -472,14 +473,18 @@ python scripts/infer_latent_editor.py \
 
 ## Model Checkpoints
 
-**Current (ParameterVAE approach):**
-- `outputs/parameter_vae_v4/best_model.pt` — ParameterVAE aux_weight=1.0 (confirms limitation) ✓
-- `outputs/parameter_vae_v3/best_model.pt` — ParameterVAE aux_weight=0.1 ✓
-- `outputs/parameter_vae_v2/best_model.pt` — ParameterVAE stricter bottleneck ✓
+**Current (13D Features + Geometric Solver):**
+- `outputs/vae_variable_13d/best_model.pt` — VariableGraphVAE with 13D features ✓
+- `outputs/latent_editor_13d/best_model.pt` — (pending training)
+
+**Legacy (ParameterVAE approach - 64% ceiling):**
+- `outputs/parameter_vae_v4/best_model.pt` — ParameterVAE aux_weight=1.0
+- `outputs/parameter_vae_v3/best_model.pt` — ParameterVAE aux_weight=0.1
+- `outputs/parameter_vae_v2/best_model.pt` — ParameterVAE stricter bottleneck
 - `outputs/latent_editor_parameter_vae_v2/best_model.pt` — 64% direction acc
 
-**Legacy (VariableGraphVAE approach):**
-- `outputs/vae_variable/best_model.pt` — Variable topology VAE (32D)
+**Legacy (VariableGraphVAE 9D approach):**
+- `outputs/vae_variable/best_model.pt` — Variable topology VAE (9D features)
 - `outputs/full_latent_regressor/best_model.pt` — Multi-head regressor, 100% exist acc
 - `outputs/latent_editor_variable/best_model.pt` — 64% direction acc
 
@@ -507,6 +512,8 @@ python scripts/infer_latent_editor.py \
 3. ~~**Add auxiliary linear head (v3)**~~ — Done, correlations unchanged ✓
 4. ~~**Try aux_weight=1.0 (v4)**~~ — Done, confirms fundamental limitation ✓
 5. ~~**Implement Geometric Solver**~~ — Done, exact parameter extraction ✓
-6. **Retrain VariableGraphVAE** with 13D features (bbox_diagonal + bbox_center)
-7. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
-8. **Future**: More complex geometry / multiple part families
+6. ~~**Retrain VariableGraphVAE with 13D features**~~ — Done, 100% accuracy, 0.0041 centroid loss ✓
+7. **Generate edit data** using 13D VAE
+8. **Train latent editor** on 13D edit data
+9. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
+10. **Future**: More complex geometry / multiple part families
