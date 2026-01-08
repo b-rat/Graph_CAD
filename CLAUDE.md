@@ -369,15 +369,58 @@ bbox_loss = (bbox_diff * node_mask_exp).sum() / (num_real_nodes * 4)
 node_loss = ... + config.bbox_weight * bbox_loss
 ```
 
-**Status:** Fix committed. VAE needs retraining with:
+**Status:** Fix committed. VAE v2 trained with bbox loss.
+
+### VAE v2 Results: Bbox Fixed, But Posterior Collapse (Jan 2026)
+
+**Bbox reconstruction improved significantly:**
+```
+VAE v1: bbox_d = 0.03-0.25 (3-25mm) — 97% error
+VAE v2: bbox_d = 1.81 (181mm) vs GT 2.08 (208mm) — 13% error
+```
+
+**But geometric solver still has large errors:**
+
+| Metric | Mean Error |
+|--------|------------|
+| leg1 | 34mm (20-30%) |
+| leg2 | 33mm (varies) |
+| width | 8mm (15-25%) |
+| thickness | 2.8mm (20-50%) |
+
+**Root Cause: Posterior Collapse**
+
+The VAE was trained with `aux_weight=0.0`, so the encoder produces nearly identical latents for different brackets:
+```
+Bracket A (leg1=100) → z_a, norm=2.78
+Bracket B (leg1=115) → z_b, norm=2.78
+delta_z = z_b - z_a, norm=0.024 (tiny!)
+```
+
+Evidence from training:
+- KL loss collapsed to 0.008 (very low)
+- Mean latent std: 0.13 (should be ~1.0)
+- Delta_z for 15% param changes: ~0.003 (nearly zero)
+
+The decoder reconstructs geometry from minimal latent information, but the latent doesn't encode parameter variations.
+
+**Solution: Retrain with aux_weight**
+
+The fixed topology VAE achieved 80% direction accuracy specifically because it used `aux_weight=0.1`. Need VAE v3:
+
 ```bash
 python scripts/train_variable_vae.py \
     --train-size 5000 --val-size 500 --test-size 500 \
     --epochs 100 --latent-dim 32 \
-    --output-dir outputs/vae_variable_13d_v2
+    --aux-weight 0.1 \
+    --output-dir outputs/vae_variable_13d_v3
 ```
 
-Then regenerate edit data and retrain latent editor.
+This adds auxiliary loss forcing core parameters (leg1, leg2, width, thickness) into the latent space linearly. Combined with bbox loss fix, should give:
+1. Correct bbox reconstruction (for geometric solver)
+2. Parameter-sensitive latent space (for meaningful edits)
+
+**Checkpoint:** `outputs/vae_variable_13d_v2/best_model.pt` (bbox fixed, but collapsed latent)
 
 ### Legacy: ParameterVAE
 
@@ -714,8 +757,9 @@ python scripts/infer_latent_editor.py \
 9. ~~**Discover z-space encodes params (r=0.98)**~~ — Problem is LLM interface, not z-space ✓
 10. ~~**Train latent editor with simplified instructions**~~ — Done, 0.2% relative error ✓
 11. ~~**Discover bbox loss bug**~~ — Loss function only trained 9/13 features, bbox never learned ✓
-12. **Retrain VAE with bbox loss fix** — In progress: `outputs/vae_variable_13d_v2`
-13. **Regenerate edit data** — Using fixed VAE
-14. **Retrain latent editor** — On new edit data
-15. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
-16. **Future**: Context-dependent instructions ("fit M8 bolt", "make legs equal")
+12. ~~**Retrain VAE v2 with bbox loss fix**~~ — Done, bbox improved (13% error), but posterior collapse ✓
+13. **Retrain VAE v3 with aux_weight=0.1** — Needed to force params into latent space
+14. **Regenerate edit data** — Using VAE v3
+15. **Retrain latent editor** — On new edit data
+16. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
+17. **Future**: Context-dependent instructions ("fit M8 bolt", "make legs equal")
