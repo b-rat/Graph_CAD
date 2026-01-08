@@ -408,12 +408,14 @@ class VariableVAELossConfig:
     # Face type classification weight
     face_type_weight: float = 0.5
 
-    # Feature-specific weights within node features (9D)
-    # [area(0), dir_xyz(1-3), centroid_xyz(4-6), curv1(7), curv2(8)]
+    # Feature-specific weights within node features (13D)
+    # [area(0), dir_xyz(1-3), centroid_xyz(4-6), curv1(7), curv2(8),
+    #  bbox_diagonal(9), bbox_cx(10), bbox_cy(11), bbox_cz(12)]
     area_weight: float = 1.0
     direction_weight: float = 1.0
     centroid_weight: float = 1.0
     curvature_weight: float = 1.0
+    bbox_weight: float = 1.0  # Weight for bbox features (dims 9-12)
 
 
 def variable_reconstruction_loss(
@@ -431,8 +433,8 @@ def variable_reconstruction_loss(
     Only computes loss on real nodes/edges (where mask=1).
 
     Args:
-        node_pred: Predicted node features, shape (batch, max_nodes, 9).
-        node_target: Target node features, shape (batch, max_nodes, 9).
+        node_pred: Predicted node features, shape (batch, max_nodes, 13).
+        node_target: Target node features, shape (batch, max_nodes, 13).
         edge_pred: Predicted edge features, shape (batch, max_edges, 2).
         edge_target: Target edge features, shape (batch, max_edges, 2).
         node_mask: Node existence mask, shape (batch, max_nodes). 1=real, 0=padding.
@@ -451,14 +453,15 @@ def variable_reconstruction_loss(
     edge_mask_exp = edge_mask.unsqueeze(-1)  # (batch, max_edges, 1)
 
     # Node feature losses (masked)
-    # 9D features: [area, dir_xyz, centroid_xyz, curv1, curv2]
+    # 13D features: [area, dir_xyz, centroid_xyz, curv1, curv2, bbox_d, bbox_cxyz]
     node_diff = (node_pred - node_target) ** 2
 
-    # Per-feature losses
+    # Per-feature losses (13D)
     area_diff = node_diff[..., 0:1]
     direction_diff = node_diff[..., 1:4]
     centroid_diff = node_diff[..., 4:7]
     curvature_diff = node_diff[..., 7:9]
+    bbox_diff = node_diff[..., 9:13]  # bbox_diagonal + bbox_center_xyz
 
     # Masked mean (sum of masked values / number of real nodes)
     num_real_nodes = node_mask.sum().clamp(min=1)
@@ -468,6 +471,7 @@ def variable_reconstruction_loss(
     direction_loss = (direction_diff * node_mask_exp).sum() / (num_real_nodes * 3)
     centroid_loss = (centroid_diff * node_mask_exp).sum() / (num_real_nodes * 3)
     curvature_loss = (curvature_diff * node_mask_exp).sum() / (num_real_nodes * 2)
+    bbox_loss = (bbox_diff * node_mask_exp).sum() / (num_real_nodes * 4)
 
     # Weighted node loss
     node_loss = (
@@ -475,6 +479,7 @@ def variable_reconstruction_loss(
         + config.direction_weight * direction_loss
         + config.centroid_weight * centroid_loss
         + config.curvature_weight * curvature_loss
+        + config.bbox_weight * bbox_loss
     )
 
     # Edge loss (masked)
@@ -491,6 +496,7 @@ def variable_reconstruction_loss(
         "direction_loss": direction_loss.detach(),
         "centroid_loss": centroid_loss.detach(),
         "curvature_loss": curvature_loss.detach(),
+        "bbox_loss": bbox_loss.detach(),
     }
 
     return total_loss, loss_dict

@@ -338,6 +338,47 @@ Result:       Low MSE requires correct direction AND magnitude
 4. Compute implicit direction accuracy from delta signs
 5. End-to-end test: z_src + instruction → z_edited → decode → geometric solver → STEP
 
+### Critical Bug Found: Bbox Features Not Trained (Jan 2026)
+
+**Discovery:** End-to-end inference failed — geometric solver returned minimum values (leg1=50mm, width=20mm, etc.) regardless of input.
+
+**Root Cause:** The loss function `variable_reconstruction_loss` only trained on 9D features:
+- `[0:1]` = area
+- `[1:4]` = direction
+- `[4:7]` = centroid
+- `[7:9]` = curvature
+
+Features 9-12 (bbox_diagonal, bbox_cx, bbox_cy, bbox_cz) were **never included in the loss**. The decoder learned to output garbage for these dimensions.
+
+**Evidence:**
+```
+Ground truth bbox_d: 2.08 (=208mm diagonal)
+Decoded bbox_d: 0.03-0.25 (=3-25mm diagonal)
+```
+
+The geometric solver uses bbox_diagonal to de-normalize centroids. With 10-70x wrong scale, all computed dimensions are tiny and clip to minimums.
+
+**Fix:** Updated `graph_cad/models/losses.py`:
+```python
+# Added to VariableVAELossConfig:
+bbox_weight: float = 1.0
+
+# Added to variable_reconstruction_loss:
+bbox_diff = node_diff[..., 9:13]  # bbox_diagonal + bbox_center_xyz
+bbox_loss = (bbox_diff * node_mask_exp).sum() / (num_real_nodes * 4)
+node_loss = ... + config.bbox_weight * bbox_loss
+```
+
+**Status:** Fix committed. VAE needs retraining with:
+```bash
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/vae_variable_13d_v2
+```
+
+Then regenerate edit data and retrain latent editor.
+
 ### Legacy: ParameterVAE
 
 Instead of decoding to graph features, decode directly to parameters. This forces the latent space to encode parameter information.
@@ -672,6 +713,9 @@ python scripts/infer_latent_editor.py \
 8. ~~**Train latent editor on 13D edit data**~~ — Done, 63.5% accuracy (same ceiling) ✓
 9. ~~**Discover z-space encodes params (r=0.98)**~~ — Problem is LLM interface, not z-space ✓
 10. ~~**Train latent editor with simplified instructions**~~ — Done, 0.2% relative error ✓
-11. **Validate simplified approach** — Pending: end-to-end test, per-instruction breakdown
-12. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
-13. **Future**: Context-dependent instructions ("fit M8 bolt", "make legs equal")
+11. ~~**Discover bbox loss bug**~~ — Loss function only trained 9/13 features, bbox never learned ✓
+12. **Retrain VAE with bbox loss fix** — In progress: `outputs/vae_variable_13d_v2`
+13. **Regenerate edit data** — Using fixed VAE
+14. **Retrain latent editor** — On new edit data
+15. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
+16. **Future**: Context-dependent instructions ("fit M8 bolt", "make legs equal")
