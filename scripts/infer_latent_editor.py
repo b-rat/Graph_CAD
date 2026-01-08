@@ -339,20 +339,42 @@ def load_editor(checkpoint_path: str, config, device: str, force_cpu: bool = Fal
     return editor, checkpoint
 
 
-def graph_to_tensor(graph, device: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Convert BRepGraph to PyTorch tensors."""
-    x = torch.tensor(graph.node_features, dtype=torch.float32, device=device)
-    edge_index = torch.tensor(graph.edge_index, dtype=torch.long, device=device)
-    edge_attr = torch.tensor(graph.edge_features, dtype=torch.float32, device=device)
-    return x, edge_index, edge_attr
+def graph_to_tensor(graph, device: str) -> dict:
+    """Convert BRepGraph to PyTorch tensors.
+
+    Returns dict with x, edge_index, edge_attr, and optionally face_types.
+    """
+    result = {
+        "x": torch.tensor(graph.node_features, dtype=torch.float32, device=device),
+        "edge_index": torch.tensor(graph.edge_index, dtype=torch.long, device=device),
+        "edge_attr": torch.tensor(graph.edge_features, dtype=torch.float32, device=device),
+    }
+    if graph.face_types is not None:
+        result["face_types"] = torch.tensor(graph.face_types, dtype=torch.long, device=device)
+    return result
 
 
 def encode_graph(vae, graph, device: str) -> torch.Tensor:
     """Encode a BRepGraph to latent vector using VAE."""
-    x, edge_index, edge_attr = graph_to_tensor(graph, device)
+    tensors = graph_to_tensor(graph, device)
+    x = tensors["x"]
+    edge_index = tensors["edge_index"]
+    edge_attr = tensors["edge_attr"]
 
     with torch.no_grad():
-        mu, logvar = vae.encode(x, edge_index, edge_attr, batch=None)
+        # Check if this is a VariableGraphVAE (has face_types in config)
+        if hasattr(vae.config, "num_face_types"):
+            # VariableGraphVAE requires face_types
+            face_types = tensors.get("face_types")
+            if face_types is None:
+                raise ValueError(
+                    "VariableGraphVAE requires face_types. "
+                    "Use extract_graph_from_solid_variable() to extract the graph."
+                )
+            mu, logvar = vae.encode(x, face_types, edge_index, edge_attr, batch=None)
+        else:
+            # GraphVAE (fixed topology)
+            mu, logvar = vae.encode(x, edge_index, edge_attr, batch=None)
         # Use mean (deterministic) in inference mode
         z = mu
 
@@ -620,20 +642,43 @@ def main():
     print("=" * 60)
 
     from graph_cad.data import LBracket, extract_graph, extract_graph_from_solid
+    from graph_cad.data.graph_extraction import (
+        extract_graph_variable,
+        extract_graph_from_solid_variable,
+    )
+    from graph_cad.data.l_bracket import VariableLBracket
+
+    # Load VAE first to determine which graph extraction to use
+    vae = load_vae(args.vae_checkpoint, device)
+    use_variable_topology = hasattr(vae.config, "num_face_types")
+
+    if use_variable_topology:
+        print("  VAE type: VariableGraphVAE (13D features)")
+    else:
+        print("  VAE type: GraphVAE (8D features)")
 
     if args.input:
         print(f"Loading STEP file: {args.input}")
-        graph = extract_graph(args.input)
+        if use_variable_topology:
+            graph = extract_graph_variable(args.input)
+        else:
+            graph = extract_graph(args.input)
         bracket = None  # Don't have parameters for STEP file input
         print(f"  Extracted graph: {graph.num_faces} faces, {graph.num_edges} edges")
 
     elif args.random_bracket:
         print("Generating random L-bracket...")
         rng = np.random.default_rng(args.seed)
-        bracket = LBracket.random(rng)
+        if use_variable_topology:
+            bracket = VariableLBracket.random(rng)
+        else:
+            bracket = LBracket.random(rng)
         print(f"  Parameters: {bracket.to_dict()}")
         solid = bracket.to_solid()
-        graph = extract_graph_from_solid(solid)
+        if use_variable_topology:
+            graph = extract_graph_from_solid_variable(solid)
+        else:
+            graph = extract_graph_from_solid(solid)
         print(f"  Graph: {graph.num_faces} faces, {graph.num_edges} edges")
 
         # Save original STEP
@@ -644,10 +689,16 @@ def main():
     else:  # --params
         print(f"Creating L-bracket from parameters: {args.params}")
         params = parse_params(args.params)
-        bracket = LBracket(**params)
+        if use_variable_topology:
+            bracket = VariableLBracket(**params)
+        else:
+            bracket = LBracket(**params)
         print(f"  Full parameters: {bracket.to_dict()}")
         solid = bracket.to_solid()
-        graph = extract_graph_from_solid(solid)
+        if use_variable_topology:
+            graph = extract_graph_from_solid_variable(solid)
+        else:
+            graph = extract_graph_from_solid(solid)
         print(f"  Graph: {graph.num_faces} faces, {graph.num_edges} edges")
 
         # Save original STEP
@@ -656,13 +707,13 @@ def main():
         print(f"  Saved original to: {original_step}")
 
     # =========================================================================
-    # Step 2: Load models
+    # Step 2: Load Latent Editor
     # =========================================================================
     print("\n" + "=" * 60)
-    print("STEP 2: Loading Models")
+    print("STEP 2: Loading Latent Editor")
     print("=" * 60)
 
-    vae = load_vae(args.vae_checkpoint, device)
+    # VAE already loaded in Step 1
 
     editor = None
     if not args.vae_only:
