@@ -404,9 +404,7 @@ Evidence from training:
 
 The decoder reconstructs geometry from minimal latent information, but the latent doesn't encode parameter variations.
 
-**Solution: Retrain with aux_weight**
-
-The fixed topology VAE achieved 80% direction accuracy specifically because it used `aux_weight=0.1`. Need VAE v3:
+**Attempted Solution: Retrain with aux_weight=0.1**
 
 ```bash
 python scripts/train_variable_vae.py \
@@ -416,11 +414,52 @@ python scripts/train_variable_vae.py \
     --output-dir outputs/vae_variable_13d_v3
 ```
 
-This adds auxiliary loss forcing core parameters (leg1, leg2, width, thickness) into the latent space linearly. Combined with bbox loss fix, should give:
-1. Correct bbox reconstruction (for geometric solver)
-2. Parameter-sensitive latent space (for meaningful edits)
+### VAE v3 Results: aux_weight Didn't Help (Jan 2026)
 
-**Checkpoint:** `outputs/vae_variable_13d_v2/best_model.pt` (bbox fixed, but collapsed latent)
+**Training metrics:**
+- aux_param_loss: 0.127 → 0.074 (improved but still high)
+- Direction accuracy: 62% (same as v2)
+
+**Parameter correlations (still weak):**
+
+| Param | VAE v2 | VAE v3 |
+|-------|--------|--------|
+| leg1 | r=-0.24 | r=-0.25 |
+| leg2 | r=-0.30 | r=+0.31 |
+| width | r=+0.25 | r=-0.28 |
+| thickness | r=+0.26 | r=-0.24 |
+
+**Why aux_weight=0.1 failed for variable topology:**
+
+The fixed topology VAE achieved 80% direction accuracy with aux_weight=0.1, but it had:
+- Fixed 10 faces, 2 holes
+- Simpler encoding task
+- 8 parameters to encode
+
+Variable topology has:
+- 6-15 faces, 0-4 holes, optional fillet
+- More complex encoding (topology + geometry)
+- Parameters competing with topology info in latent space
+
+The graph encoder architecture inherently encodes graph structure nonlinearly. The aux loss forces a linear mapping from z to params, but the encoder still maps geometry→z in a nonlinear, topology-dependent way.
+
+**Checkpoints:**
+- `outputs/vae_variable_13d_v2/best_model.pt` — bbox fixed, collapsed latent
+- `outputs/vae_variable_13d_v3/best_model.pt` — bbox fixed, aux_weight=0.1, still weak correlations
+
+### Fundamental Limitation
+
+The graph-based VAE architecture fundamentally struggles with parameter-aware latent spaces for variable topology:
+
+1. **Encoder**: GNN aggregates node features → nonlinear encoding
+2. **Decoder**: MLP reconstructs geometry → doesn't need linear param structure
+3. **aux_loss**: Forces linear param prediction from z, but can't change encoder behavior
+
+**Possible directions:**
+1. **Much higher aux_weight** (0.5-1.0) — risk hurting reconstruction
+2. **ParameterVAE** — decode to params directly (tried, 64% ceiling)
+3. **Two-stage**: z-edits for direction, separate regressor for magnitude
+4. **Accept limitation**: System encodes geometry well, but latent edits don't map to parameter changes reliably
 
 ### Legacy: ParameterVAE
 
@@ -757,9 +796,12 @@ python scripts/infer_latent_editor.py \
 9. ~~**Discover z-space encodes params (r=0.98)**~~ — Problem is LLM interface, not z-space ✓
 10. ~~**Train latent editor with simplified instructions**~~ — Done, 0.2% relative error ✓
 11. ~~**Discover bbox loss bug**~~ — Loss function only trained 9/13 features, bbox never learned ✓
-12. ~~**Retrain VAE v2 with bbox loss fix**~~ — Done, bbox improved (13% error), but posterior collapse ✓
-13. **Retrain VAE v3 with aux_weight=0.1** — Needed to force params into latent space
-14. **Regenerate edit data** — Using VAE v3
-15. **Retrain latent editor** — On new edit data
-16. **Test end-to-end**: VAE decode → Geometric Solver → VariableLBracket
-17. **Future**: Context-dependent instructions ("fit M8 bolt", "make legs equal")
+12. ~~**Retrain VAE v2 with bbox loss fix**~~ — Done, bbox 13% error, but posterior collapse ✓
+13. ~~**Retrain VAE v3 with aux_weight=0.1**~~ — Done, 62% direction acc, correlations still weak ✓
+14. **Fundamental limitation confirmed** — Graph VAE can't produce parameter-aware latent for variable topology
+
+**Possible directions forward:**
+- Try much higher aux_weight (0.5-1.0)
+- Two-stage approach: latent edits for direction, separate regressor for params
+- Alternative architecture that doesn't rely on graph→latent→params pipeline
+- Focus on fixed topology where 80% accuracy was achieved
