@@ -497,14 +497,36 @@ def load_checkpoint(
         device: Device to load model to.
 
     Returns:
-        model: Loaded GraphVAE model.
+        model: Loaded GraphVAE or VariableGraphVAE model.
         checkpoint: Full checkpoint dict with metrics, epoch, etc.
     """
     from graph_cad.models import GraphVAE
+    from graph_cad.models.graph_vae import (
+        GraphVAEConfig,
+        VariableGraphVAE,
+        VariableGraphVAEConfig,
+    )
 
     checkpoint = torch.load(path, map_location=device, weights_only=False)
-    config = checkpoint["config"]
-    model = GraphVAE(config)
+    config_dict = checkpoint["config"]
+
+    # Detect VAE type based on config keys
+    if isinstance(config_dict, dict):
+        if "max_nodes" in config_dict or "num_face_types" in config_dict:
+            # VariableGraphVAE checkpoint
+            config = VariableGraphVAEConfig(**config_dict)
+            model = VariableGraphVAE(config)
+        else:
+            # GraphVAE checkpoint
+            config = GraphVAEConfig(**config_dict)
+            model = GraphVAE(config)
+    else:
+        # Config is already a dataclass object
+        if hasattr(config_dict, "max_nodes") or hasattr(config_dict, "num_face_types"):
+            model = VariableGraphVAE(config_dict)
+        else:
+            model = GraphVAE(config_dict)
+
     model.load_state_dict(checkpoint["model_state_dict"])
     model.to(device)
 
