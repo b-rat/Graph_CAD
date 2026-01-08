@@ -39,22 +39,18 @@ def load_training_sample(data_dir: Path, sample_idx: int = 0):
             raise ValueError(f"Sample index {sample_idx} out of range (max {len(samples)-1})")
 
         sample = samples[sample_idx]
+
+        # Simple edit data stores z_src and param metadata, not full features
+        # We'll decode z_src and compare to param metadata
         return {
-            "node_features": np.array(sample["z_src_features"], dtype=np.float32),
-            "face_types": np.array(sample.get("face_types", [0] * len(sample["z_src_features"])), dtype=np.int64),
-            "node_mask": np.ones(len(sample["z_src_features"]), dtype=np.float32),
-            "edge_features": np.zeros((0, 2), dtype=np.float32),  # Not stored in JSON
-            "edge_index": np.zeros((2, 0), dtype=np.int64),  # Not stored in JSON
-            "edge_mask": np.zeros(0, dtype=np.float32),
-            "params": np.array([
-                sample["params"]["leg1_length"],
-                sample["params"]["leg2_length"],
-                sample["params"]["width"],
-                sample["params"]["thickness"],
-            ], dtype=np.float32),
             "z_src": np.array(sample["z_src"], dtype=np.float32),
             "instruction": sample.get("instruction", ""),
-            "format": "json",
+            "param": sample.get("param"),  # Which param was edited (e.g., "leg1_length")
+            "current_value": sample.get("current_value"),  # Value before edit
+            "new_value": sample.get("new_value"),  # Value after edit
+            "direction": sample.get("direction"),  # 1.0=increase, 0.0=decrease
+            "edit_type": sample.get("edit_type", "unknown"),
+            "format": "json_simple",
         }
 
     # Try numpy format (old edit_data)
@@ -284,49 +280,93 @@ def main():
             print(f"\n--- Training Sample {i} ---")
             sample = load_training_sample(training_data_path, i)
 
-            # Ground truth params
-            param_names = ["leg1_length", "leg2_length", "width", "thickness"]
-            gt_params = {name: sample["params"][j] for j, name in enumerate(param_names)}
-            print(f"GT params: leg1={gt_params['leg1_length']:.1f}, leg2={gt_params['leg2_length']:.1f}, "
-                  f"width={gt_params['width']:.1f}, thickness={gt_params['thickness']:.1f}")
+            if sample.get("format") == "json_simple":
+                # Simple edit data: only has z_src and param metadata
+                print(f"Instruction: {sample['instruction']}")
+                if sample['param']:
+                    print(f"Edited param: {sample['param']} = {sample['current_value']:.1f}")
 
-            # Encode and decode
-            result = encode_decode_training_sample(vae, sample, device)
-            if result.get("used_stored_z"):
-                print(f"  (Using stored z_src from training data - testing DECODER only)")
+                # Decode z_src
+                z = torch.tensor(sample["z_src"], dtype=torch.float32, device=device)
+                if z.dim() == 1:
+                    z = z.unsqueeze(0)
 
-            # Compute metrics
-            num_valid = int(sample["node_mask"].sum())
-            metrics = compute_reconstruction_metrics(
-                sample["node_features"][:num_valid],
-                result["decoded_node_features"][:num_valid],
-                sample["node_mask"][:num_valid]
-            )
-            print(f"Reconstruction MSE: {metrics['mse']:.6f}")
-            print(f"Reconstruction MAE: {metrics['mae']:.6f}")
+                with torch.no_grad():
+                    decoded = vae.decode(z)
 
-            # Test geometric solver on ground truth
-            gt_solved = test_geometric_solver(
-                sample["node_features"],
-                sample["face_types"],
-                sample["node_mask"],
-                gt_params
-            )
-            print(f"Solver on GT: leg1={gt_solved.get('leg1_length', 'ERR'):.1f}, "
-                  f"leg2={gt_solved.get('leg2_length', 'ERR'):.1f}")
+                decoded_features = decoded["node_features"].cpu().numpy()[0]
+                decoded_face_types = decoded["face_type_logits"].argmax(dim=-1).cpu().numpy()[0]
+                decoded_node_mask = (torch.sigmoid(decoded["node_mask_logits"]) > 0.5).cpu().numpy()[0]
 
-            # Test geometric solver on decoded
-            dec_solved = test_geometric_solver(
-                result["decoded_node_features"],
-                result["decoded_face_types"],
-                result["decoded_node_mask"],
-                gt_params
-            )
-            print(f"Solver on Decoded: leg1={dec_solved.get('leg1_length', 'ERR'):.1f}, "
-                  f"leg2={dec_solved.get('leg2_length', 'ERR'):.1f}")
-            if "errors" in dec_solved:
-                print(f"  Errors: leg1={dec_solved['errors']['leg1']:+.1f}, "
-                      f"leg2={dec_solved['errors']['leg2']:+.1f}")
+                print(f"Z norm: {np.linalg.norm(sample['z_src']):.4f}")
+                print(f"Decoded nodes: {int(decoded_node_mask.sum())} valid out of {len(decoded_node_mask)}")
+
+                # Test geometric solver on decoded features
+                dec_solved = test_geometric_solver(
+                    decoded_features,
+                    decoded_face_types,
+                    decoded_node_mask,
+                    None  # No ground truth params to compare
+                )
+                if "error" not in dec_solved:
+                    print(f"Solver on Decoded: leg1={dec_solved['leg1_length']:.1f}, "
+                          f"leg2={dec_solved['leg2_length']:.1f}, "
+                          f"width={dec_solved['width']:.1f}, "
+                          f"thickness={dec_solved['thickness']:.1f}")
+                    # Compare to stored param value if available
+                    if sample['param'] and sample['current_value']:
+                        solved_value = dec_solved.get(sample['param'], None)
+                        if solved_value:
+                            error = solved_value - sample['current_value']
+                            print(f"  {sample['param']}: solved={solved_value:.1f}, "
+                                  f"stored={sample['current_value']:.1f}, error={error:+.1f}")
+                else:
+                    print(f"Solver failed: {dec_solved['error']}")
+
+            else:
+                # Numpy format with full features
+                param_names = ["leg1_length", "leg2_length", "width", "thickness"]
+                gt_params = {name: sample["params"][j] for j, name in enumerate(param_names)}
+                print(f"GT params: leg1={gt_params['leg1_length']:.1f}, leg2={gt_params['leg2_length']:.1f}, "
+                      f"width={gt_params['width']:.1f}, thickness={gt_params['thickness']:.1f}")
+
+                # Encode and decode
+                result = encode_decode_training_sample(vae, sample, device)
+                if result.get("used_stored_z"):
+                    print(f"  (Using stored z_src from training data - testing DECODER only)")
+
+                # Compute metrics
+                num_valid = int(sample["node_mask"].sum())
+                metrics = compute_reconstruction_metrics(
+                    sample["node_features"][:num_valid],
+                    result["decoded_node_features"][:num_valid],
+                    sample["node_mask"][:num_valid]
+                )
+                print(f"Reconstruction MSE: {metrics['mse']:.6f}")
+                print(f"Reconstruction MAE: {metrics['mae']:.6f}")
+
+                # Test geometric solver on ground truth
+                gt_solved = test_geometric_solver(
+                    sample["node_features"],
+                    sample["face_types"],
+                    sample["node_mask"],
+                    gt_params
+                )
+                print(f"Solver on GT: leg1={gt_solved.get('leg1_length', 'ERR'):.1f}, "
+                      f"leg2={gt_solved.get('leg2_length', 'ERR'):.1f}")
+
+                # Test geometric solver on decoded
+                dec_solved = test_geometric_solver(
+                    result["decoded_node_features"],
+                    result["decoded_face_types"],
+                    result["decoded_node_mask"],
+                    gt_params
+                )
+                print(f"Solver on Decoded: leg1={dec_solved.get('leg1_length', 'ERR'):.1f}, "
+                      f"leg2={dec_solved.get('leg2_length', 'ERR'):.1f}")
+                if "errors" in dec_solved:
+                    print(f"  Errors: leg1={dec_solved['errors']['leg1']:+.1f}, "
+                          f"leg2={dec_solved['errors']['leg2']:+.1f}")
     else:
         print(f"Training data not found at {training_data_path}")
         print("Skipping training data test.")
