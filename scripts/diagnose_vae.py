@@ -25,66 +25,116 @@ from graph_cad.utils.geometric_solver import solve_params_from_features
 
 
 def load_training_sample(data_dir: Path, sample_idx: int = 0):
-    """Load a sample from the training data."""
-    # Load the npz files
-    node_features = np.load(data_dir / "node_features.npy")
-    face_types = np.load(data_dir / "face_types.npy")
-    node_masks = np.load(data_dir / "node_masks.npy")
-    edge_features = np.load(data_dir / "edge_features.npy")
-    edge_indices = np.load(data_dir / "edge_indices.npy")
-    edge_masks = np.load(data_dir / "edge_masks.npy")
-    params = np.load(data_dir / "params.npy")
+    """Load a sample from the training data.
 
-    # Get a single sample
-    return {
-        "node_features": node_features[sample_idx],
-        "face_types": face_types[sample_idx],
-        "node_mask": node_masks[sample_idx],
-        "edge_features": edge_features[sample_idx],
-        "edge_index": edge_indices[sample_idx],
-        "edge_mask": edge_masks[sample_idx],
-        "params": params[sample_idx],
-    }
+    Supports both numpy format (old) and JSON format (simple_edit_data).
+    """
+    # Try JSON format first (simple_edit_data)
+    train_json = data_dir / "train.json"
+    if train_json.exists():
+        with open(train_json) as f:
+            samples = json.load(f)
+
+        if sample_idx >= len(samples):
+            raise ValueError(f"Sample index {sample_idx} out of range (max {len(samples)-1})")
+
+        sample = samples[sample_idx]
+        return {
+            "node_features": np.array(sample["z_src_features"], dtype=np.float32),
+            "face_types": np.array(sample.get("face_types", [0] * len(sample["z_src_features"])), dtype=np.int64),
+            "node_mask": np.ones(len(sample["z_src_features"]), dtype=np.float32),
+            "edge_features": np.zeros((0, 2), dtype=np.float32),  # Not stored in JSON
+            "edge_index": np.zeros((2, 0), dtype=np.int64),  # Not stored in JSON
+            "edge_mask": np.zeros(0, dtype=np.float32),
+            "params": np.array([
+                sample["params"]["leg1_length"],
+                sample["params"]["leg2_length"],
+                sample["params"]["width"],
+                sample["params"]["thickness"],
+            ], dtype=np.float32),
+            "z_src": np.array(sample["z_src"], dtype=np.float32),
+            "instruction": sample.get("instruction", ""),
+            "format": "json",
+        }
+
+    # Try numpy format (old edit_data)
+    node_features_path = data_dir / "node_features.npy"
+    if node_features_path.exists():
+        node_features = np.load(data_dir / "node_features.npy")
+        face_types = np.load(data_dir / "face_types.npy")
+        node_masks = np.load(data_dir / "node_masks.npy")
+        edge_features = np.load(data_dir / "edge_features.npy")
+        edge_indices = np.load(data_dir / "edge_indices.npy")
+        edge_masks = np.load(data_dir / "edge_masks.npy")
+        params = np.load(data_dir / "params.npy")
+
+        return {
+            "node_features": node_features[sample_idx],
+            "face_types": face_types[sample_idx],
+            "node_mask": node_masks[sample_idx],
+            "edge_features": edge_features[sample_idx],
+            "edge_index": edge_indices[sample_idx],
+            "edge_mask": edge_masks[sample_idx],
+            "params": params[sample_idx],
+            "format": "numpy",
+        }
+
+    raise FileNotFoundError(f"No training data found at {data_dir} (tried train.json and node_features.npy)")
 
 
 def encode_decode_training_sample(vae, sample, device):
-    """Encode and decode a training sample (already padded)."""
-    # Convert to tensors
-    x = torch.tensor(sample["node_features"], dtype=torch.float32, device=device).unsqueeze(0)
-    face_types = torch.tensor(sample["face_types"], dtype=torch.long, device=device).unsqueeze(0)
-    node_mask = torch.tensor(sample["node_mask"], dtype=torch.float32, device=device).unsqueeze(0)
-    edge_attr = torch.tensor(sample["edge_features"], dtype=torch.float32, device=device).unsqueeze(0)
-    edge_index = torch.tensor(sample["edge_index"], dtype=torch.long, device=device).unsqueeze(0)
+    """Encode and decode a training sample.
 
+    For JSON format: uses stored z_src directly (tests decoder only)
+    For numpy format: encodes then decodes (tests full pipeline)
+    """
     with torch.no_grad():
-        # Encode - need to reshape for encoder
-        # The encoder expects (num_nodes, features) not (batch, num_nodes, features)
-        # But we need batch dimension for proper handling
-        x_flat = x.squeeze(0)
-        face_types_flat = face_types.squeeze(0)
-        node_mask_flat = node_mask.squeeze(0)
-        edge_attr_flat = edge_attr.squeeze(0)
+        if sample.get("format") == "json" and "z_src" in sample:
+            # JSON format: use stored z_src directly
+            z = torch.tensor(sample["z_src"], dtype=torch.float32, device=device)
+            if z.dim() == 1:
+                z = z.unsqueeze(0)  # Add batch dimension
 
-        # Find actual edges (non-padded)
-        num_edges = int(sample["edge_mask"].sum())
-        edge_index_flat = edge_index.squeeze(0)[:, :num_edges]
-        edge_attr_flat = edge_attr_flat[:num_edges]
+            # Decode
+            decoded = vae.decode(z)
 
-        mu, logvar = vae.encode(
-            x_flat, face_types_flat, edge_index_flat, edge_attr_flat,
-            batch=None, node_mask=node_mask_flat
-        )
-        z = mu  # Use mean for deterministic reconstruction
+            return {
+                "z": z.cpu().numpy(),
+                "decoded_node_features": decoded["node_features"].cpu().numpy()[0],
+                "decoded_face_types": decoded["face_type_logits"].argmax(dim=-1).cpu().numpy()[0],
+                "decoded_node_mask": (torch.sigmoid(decoded["node_mask_logits"]) > 0.5).cpu().numpy()[0],
+                "used_stored_z": True,
+            }
+        else:
+            # Numpy format: encode then decode
+            x = torch.tensor(sample["node_features"], dtype=torch.float32, device=device)
+            face_types = torch.tensor(sample["face_types"], dtype=torch.long, device=device)
+            node_mask = torch.tensor(sample["node_mask"], dtype=torch.float32, device=device)
+            edge_attr = torch.tensor(sample["edge_features"], dtype=torch.float32, device=device)
+            edge_index = torch.tensor(sample["edge_index"], dtype=torch.long, device=device)
 
-        # Decode
-        decoded = vae.decode(z)
+            # Find actual edges (non-padded)
+            num_edges = int(sample["edge_mask"].sum()) if len(sample["edge_mask"]) > 0 else 0
+            if num_edges > 0:
+                edge_index = edge_index[:, :num_edges]
+                edge_attr = edge_attr[:num_edges]
 
-    return {
-        "z": z.cpu().numpy(),
-        "decoded_node_features": decoded["node_features"].cpu().numpy()[0],
-        "decoded_face_types": decoded["face_type_logits"].argmax(dim=-1).cpu().numpy()[0],
-        "decoded_node_mask": (torch.sigmoid(decoded["node_mask_logits"]) > 0.5).cpu().numpy()[0],
-    }
+            mu, logvar = vae.encode(
+                x, face_types, edge_index, edge_attr,
+                batch=None, node_mask=node_mask
+            )
+            z = mu  # Use mean for deterministic reconstruction
+
+            # Decode
+            decoded = vae.decode(z)
+
+            return {
+                "z": z.cpu().numpy(),
+                "decoded_node_features": decoded["node_features"].cpu().numpy()[0],
+                "decoded_face_types": decoded["face_type_logits"].argmax(dim=-1).cpu().numpy()[0],
+                "decoded_node_mask": (torch.sigmoid(decoded["node_mask_logits"]) > 0.5).cpu().numpy()[0],
+                "used_stored_z": False,
+            }
 
 
 def encode_decode_new_sample(vae, bracket, device):
@@ -218,9 +268,12 @@ def main():
     vae.eval()
     print(f"  VAE config: max_nodes={vae.config.max_nodes}, latent_dim={vae.config.latent_dim}")
 
-    # Check if training data exists
+    # Check if training data exists (either JSON or numpy format)
     training_data_path = Path(args.training_data)
-    has_training_data = (training_data_path / "node_features.npy").exists()
+    has_training_data = (
+        (training_data_path / "train.json").exists() or
+        (training_data_path / "node_features.npy").exists()
+    )
 
     print("\n" + "=" * 70)
     print("TEST 1: Reconstruction on TRAINING DATA samples")
@@ -239,6 +292,8 @@ def main():
 
             # Encode and decode
             result = encode_decode_training_sample(vae, sample, device)
+            if result.get("used_stored_z"):
+                print(f"  (Using stored z_src from training data - testing DECODER only)")
 
             # Compute metrics
             num_valid = int(sample["node_mask"].sum())
