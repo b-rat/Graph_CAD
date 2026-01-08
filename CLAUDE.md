@@ -447,6 +447,85 @@ The graph encoder architecture inherently encodes graph structure nonlinearly. T
 - `outputs/vae_variable_13d_v2/best_model.pt` — bbox fixed, collapsed latent
 - `outputs/vae_variable_13d_v3/best_model.pt` — bbox fixed, aux_weight=0.1, still weak correlations
 
+### Posterior Collapse Root Cause Analysis (Jan 2026)
+
+The aux_weight approach failed because the real problem was **posterior collapse**, not lack of parameter supervision. Diagnosis revealed multiple interacting factors:
+
+**1. β Too Low (Critical)**
+- Old default: `β = 0.01`
+- With reconstruction loss ~0.016 and raw KL ~50 nats:
+  - KL contribution to loss: 0.01 × 50 = 0.5
+  - **KL was only ~3% of total loss** — effectively ignored
+- Model learned to minimize reconstruction and ignore KL entirely
+
+**2. Free Bits Too High (Critical)**
+- Old default: `free_bits = 2.0`
+- This means: "Don't penalize KL below 2.0 nats per dimension"
+- With 32 dims: encoder could collapse to near-zero variance and pay zero penalty up to 64 total nats
+- Ideal per-dim KL for N(0,1) is ~0.5 nats — far below threshold
+
+**3. Decoder Overpowered**
+- Encoder: ~20-30K params → 32D latent bottleneck
+- Decoder: ~150K params (256→256→128 hidden dims)
+- **Decoder was 5-8x larger than encoder** — could reconstruct from nearly constant z
+
+**4. No KL Annealing**
+- β was fixed from epoch 1
+- Standard practice: start β=0 to learn good reconstructions, gradually increase
+
+**The Math:**
+```
+Reconstruction loss: 0.016
+KL loss (raw):       50 nats
+KL loss (scaled):    0.01 × 50 = 0.5
+
+Total loss ≈ 0.016 + 0.5 = 0.516
+KL weight: 0.5 / 0.516 ≈ 3%  ← Model learns to ignore KL
+```
+
+### VAE v4: Posterior Collapse Fix (Jan 2026)
+
+Implemented coordinated fixes in `train_variable_vae.py`:
+
+**Parameter Changes:**
+
+| Parameter | Old Default | New Default | Rationale |
+|-----------|-------------|-------------|-----------|
+| `target-beta` | 0.01 | **0.1** | KL now ~50% of loss |
+| `free-bits` | 2.0 | **0.5** | Penalize collapse earlier |
+| `decoder-hidden-dims` | (256,256,128) | **(128,128,64)** | Reduce decoder capacity |
+
+**New Features:**
+
+1. **Beta Annealing**: Linear warmup from β=0 to target over first 50% of epochs
+   ```python
+   # Epoch 1: β=0.002, Epoch 25: β=0.05, Epoch 50+: β=0.1
+   beta = get_beta_schedule(epoch, total_epochs, warmup_epochs, start_beta=0.0, target_beta)
+   ```
+
+2. **Real-time Collapse Monitoring**: Training now shows latent health indicators
+   ```
+   Epoch  10/100 | β=0.020 | Val: 0.0234 | Active: 28/32 | Std: 0.85 | KL_prior: 45.2
+   Epoch  50/100 | β=0.100 | Val: 0.0189 | Active: 32/32 | Std: 0.92 | KL_prior: 52.1 ⚠️ COLLAPSE
+   ```
+   - Shows `⚠️ COLLAPSE` if <50% active dims
+   - Shows `⚠️ LOW_STD` if mean std < 0.3
+
+3. **New CLI Arguments**:
+   - `--beta-warmup-epochs`: Control warmup period (default: 50% of epochs)
+   - `--decoder-hidden-dims`: Comma-separated dims (default: "128,128,64")
+
+**Model Size Reduction:**
+- Old decoder: ~150K params
+- New decoder: ~50K params
+
+**Expected Improvements:**
+- KL loss: 2-5 nats (from ~0.008)
+- Active dims: 28-32/32 (from 8/32)
+- Latent mean std: 0.8-1.0 (from 0.13)
+
+**Checkpoint:** `outputs/vae_variable_v4/best_model.pt` (pending training)
+
 ### Fundamental Limitation
 
 The graph-based VAE architecture fundamentally struggles with parameter-aware latent spaces for variable topology:
@@ -456,10 +535,11 @@ The graph-based VAE architecture fundamentally struggles with parameter-aware la
 3. **aux_loss**: Forces linear param prediction from z, but can't change encoder behavior
 
 **Possible directions:**
-1. **Much higher aux_weight** (0.5-1.0) — risk hurting reconstruction
-2. **ParameterVAE** — decode to params directly (tried, 64% ceiling)
-3. **Two-stage**: z-edits for direction, separate regressor for magnitude
-4. **Accept limitation**: System encodes geometry well, but latent edits don't map to parameter changes reliably
+1. ~~**Much higher aux_weight** (0.5-1.0)~~ — Tried, didn't help (collapse was the real issue)
+2. **Fix posterior collapse first** — Now implemented in v4 ✓
+3. **ParameterVAE** — decode to params directly (tried, 64% ceiling)
+4. **Two-stage**: z-edits for direction, separate regressor for magnitude
+5. **Accept limitation**: System encodes geometry well, but latent edits don't map to parameter changes reliably
 
 ### Legacy: ParameterVAE
 
@@ -557,24 +637,31 @@ This approach sidesteps the 64% ceiling entirely by not requiring the latent to 
 ### Training Commands (Variable Topology with Geometric Solver)
 
 ```bash
-# 1. Train VariableGraphVAE with 13D features (recommended)
+# 1. Train VariableGraphVAE with 13D features (v4 with collapse fix)
 python scripts/train_variable_vae.py \
     --train-size 5000 --val-size 500 --test-size 500 \
     --epochs 100 --latent-dim 32 \
-    --output-dir outputs/vae_variable_13d
+    --output-dir outputs/vae_variable_v4
+# New defaults: target-beta=0.1, free-bits=0.5, decoder-hidden-dims=128,128,64
+# Beta annealing: 0 → 0.1 over first 50 epochs
+
+# For old behavior (not recommended - causes posterior collapse):
+python scripts/train_variable_vae.py \
+    --target-beta 0.01 --free-bits 2.0 --decoder-hidden-dims 256,256,128 \
+    --beta-warmup-epochs 0 ...
 
 # 2. Generate edit data using 13D VAE
 python scripts/generate_variable_edit_data.py \
-    --vae-checkpoint outputs/vae_variable_13d/best_model.pt \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
     --num-samples 50000 \
-    --output data/edit_data_13d
+    --output data/edit_data_v4
 
 # 3. Train latent editor
 python scripts/train_latent_editor.py \
-    --data-dir data/edit_data_13d \
+    --data-dir data/edit_data_v4 \
     --latent-dim 32 --direction-weight 0.5 \
     --epochs 20 --batch-size 8 --gradient-accumulation 4 \
-    --output-dir outputs/latent_editor_13d
+    --output-dir outputs/latent_editor_v4
 ```
 
 **Legacy (ParameterVAE approach - limited by 64% ceiling):**
@@ -625,9 +712,10 @@ python scripts/train_parameter_vae.py \
    - Not caused by VAE (latent space is symmetric)
    - Caused by training dynamics — direction classifier fixes it
 
-5. **β and Free-Bits**
-   - β=0.01 optimal (β=0.1 causes variance collapse)
-   - Free-bits=2.0 prevents posterior collapse
+5. **β and Free-Bits (Fixed Topology)**
+   - β=0.01 worked for fixed topology (simpler task)
+   - **Note**: Variable topology requires different settings (see VAE v4 section)
+   - Variable topology with β=0.01 causes posterior collapse due to more complex encoding task
 
 ### Ablation Results Summary
 
@@ -798,10 +886,16 @@ python scripts/infer_latent_editor.py \
 11. ~~**Discover bbox loss bug**~~ — Loss function only trained 9/13 features, bbox never learned ✓
 12. ~~**Retrain VAE v2 with bbox loss fix**~~ — Done, bbox 13% error, but posterior collapse ✓
 13. ~~**Retrain VAE v3 with aux_weight=0.1**~~ — Done, 62% direction acc, correlations still weak ✓
-14. **Fundamental limitation confirmed** — Graph VAE can't produce parameter-aware latent for variable topology
+14. ~~**Diagnose posterior collapse root cause**~~ — Done, β too low, free_bits too high, decoder overpowered ✓
+15. ~~**Implement collapse fix (v4)**~~ — Done, beta annealing + reduced decoder + new defaults ✓
+16. **Train VAE v4 with collapse fix** — Pending
+
+**Current focus:**
+- Train VAE v4 and verify collapse is fixed (expect: active_dims > 28/32, std > 0.8)
+- If collapse fixed, retrain latent editor and test end-to-end pipeline
+- Validate geometric solver works with non-collapsed latents
 
 **Possible directions forward:**
-- Try much higher aux_weight (0.5-1.0)
 - Two-stage approach: latent edits for direction, separate regressor for params
 - Alternative architecture that doesn't rely on graph→latent→params pipeline
 - Focus on fixed topology where 80% accuracy was achieved
