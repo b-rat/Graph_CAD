@@ -355,7 +355,10 @@ def graph_to_tensor(graph, device: str) -> dict:
 
 
 def encode_graph(vae, graph, device: str) -> torch.Tensor:
-    """Encode a BRepGraph to latent vector using VAE."""
+    """Encode a BRepGraph to latent vector using VAE.
+
+    For VariableGraphVAE, pads inputs to max_nodes/max_edges to match training.
+    """
     tensors = graph_to_tensor(graph, device)
     x = tensors["x"]
     edge_index = tensors["edge_index"]
@@ -364,14 +367,44 @@ def encode_graph(vae, graph, device: str) -> torch.Tensor:
     with torch.no_grad():
         # Check if this is a VariableGraphVAE (has face_types in config)
         if hasattr(vae.config, "num_face_types"):
-            # VariableGraphVAE requires face_types
+            # VariableGraphVAE requires face_types and padding to match training
             face_types = tensors.get("face_types")
             if face_types is None:
                 raise ValueError(
                     "VariableGraphVAE requires face_types. "
                     "Use extract_graph_from_solid_variable() to extract the graph."
                 )
-            mu, logvar = vae.encode(x, face_types, edge_index, edge_attr, batch=None)
+
+            # Pad to max_nodes/max_edges to match training data format
+            max_nodes = vae.config.max_nodes
+            max_edges = vae.config.max_edges
+            num_nodes = x.shape[0]
+            num_edges = edge_attr.shape[0]
+
+            # Pad node features
+            x_padded = torch.zeros(max_nodes, x.shape[1], device=device)
+            x_padded[:num_nodes] = x
+
+            # Pad face types
+            face_types_padded = torch.zeros(max_nodes, dtype=torch.long, device=device)
+            face_types_padded[:num_nodes] = face_types
+
+            # Create node mask
+            node_mask = torch.zeros(max_nodes, device=device)
+            node_mask[:num_nodes] = 1.0
+
+            # Pad edge features
+            edge_attr_padded = torch.zeros(max_edges, edge_attr.shape[1], device=device)
+            edge_attr_padded[:num_edges] = edge_attr
+
+            # Pad edge index (add self-loops for padding)
+            edge_index_padded = torch.zeros(2, max_edges, dtype=torch.long, device=device)
+            edge_index_padded[:, :num_edges] = edge_index
+
+            mu, logvar = vae.encode(
+                x_padded, face_types_padded, edge_index_padded, edge_attr_padded,
+                batch=None, node_mask=node_mask
+            )
         else:
             # GraphVAE (fixed topology)
             mu, logvar = vae.encode(x, edge_index, edge_attr, batch=None)
