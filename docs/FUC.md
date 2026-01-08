@@ -18,13 +18,18 @@ git remote set-url origin https://GIT_TOKEN@github.com/b-rat/Graph_CAD.git
 git config user.email "brian.ratliff@mechnlengr.com"
 git config user.name "b-rat"
 git pull
-apt-get update && apt-get install -y git-lfs && git lfs install && git lfs pull
-pip install -r requirements-cloud-gpu.txt && pip install -e . && pip install hf_transfer
-echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc # changes default download for hugging face to network volume
-source ~/.bashrc            # re-read bash file
-apt update && apt install tmux -y
-apt-get update && apt-get install -y libxrender1 libxext6
-apt install jq # installed jq viewer for .json
+git lfs pull
+
+
+apt-get update && apt-get install -y git-lfs && git lfs install && \
+pip install -r requirements-cloud-gpu.txt && pip install -e . && pip install hf_transfer && \
+echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc && \
+source ~/.bashrc && \
+apt update && apt install tmux -y && \
+apt-get update && apt-get install -y libxrender1 libxext6 && \
+apt install jq
+
+
 jq . filename.json # to view file
 jq 'length' filename.json # count items in the file
 git add -f outputs/latent_editor/best_model.pt
@@ -432,4 +437,58 @@ TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
     --batch-size 8 \
     --gradient-accumulation 4 \
     --output-dir outputs/latent_editor_simple
+```
+
+```bash
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 longer" \
+    --vae-checkpoint outputs/vae_variable_13d/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_simple/best_model.pt \
+    --output-dir outputs/inference_test \
+    --seed $RANDOM \
+    --verbose
+```
+
+```bash
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 longer" \
+    --vae-checkpoint outputs/vae_variable_13d/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_simple/best_model.pt \
+    --output-dir outputs/inference_test \
+    --verbose
+```
+
+```bash
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/vae_variable_13d_v2 && \
+python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_13d_v2/best_model.pt \
+    --num-samples 50000 --delta-fraction 0.15 \
+    --output data/simple_edit_data_v2 && \
+python scripts/train_latent_editor.py \
+    --data-dir data/simple_edit_data_v2 \
+    --latent-dim 32 --direction-weight 0 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_simple_v2
+```
+
+```bash
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --aux-weight 0.1 \
+    --output-dir outputs/vae_variable_13d_v3 && \
+python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_13d_v3/best_model.pt \
+    --num-samples 50000 --delta-fraction 0.15 \
+    --output data/simple_edit_data_v3 && \
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/simple_edit_data_v3 \
+    --latent-dim 32 --direction-weight 0 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_simple_v3
 ```

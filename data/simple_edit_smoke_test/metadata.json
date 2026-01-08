@@ -1,0 +1,11 @@
+{
+  "vae_checkpoint": "outputs/vae_variable_13d/best_model.pt",
+  "num_samples": 100,
+  "delta_fraction": 0.15,
+  "noop_ratio": 0.1,
+  "train_size": 80,
+  "val_size": 10,
+  "test_size": 10,
+  "seed": 42,
+  "instruction_type": "simple_directional"
+}
