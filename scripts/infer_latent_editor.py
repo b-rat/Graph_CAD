@@ -740,6 +740,43 @@ def main():
     orig_edge_recon = orig_decoded["edge_features"]
     print(f"  Reconstruction check: node_shape={orig_node_recon.shape}, edge_shape={orig_edge_recon.shape}")
 
+    # Debug: Compare ground truth vs decoded features
+    if args.verbose and graph.face_types is not None:
+        gt_features = graph.node_features
+        gt_face_types = graph.face_types
+        print(f"\n  Ground Truth vs Decoded Comparison:")
+        print(f"    GT features shape: {gt_features.shape}")
+        print(f"    Decoded shape: {orig_node_recon.shape}")
+        # Compare first few nodes
+        num_nodes = min(len(gt_features), 3)
+        for i in range(num_nodes):
+            print(f"    Node {i} (face_type={gt_face_types[i]}):")
+            print(f"      GT:      {gt_features[i, :4]}...")  # First 4 features
+            print(f"      Decoded: {orig_node_recon[i, :4]}...")
+        # Overall reconstruction error
+        valid_mask = orig_decoded.get("node_mask", np.ones(len(orig_node_recon)))
+        num_valid = int(valid_mask.sum()) if valid_mask is not None else len(orig_node_recon)
+        if num_valid <= len(gt_features):
+            recon_mse = np.mean((gt_features[:num_valid] - orig_node_recon[:num_valid]) ** 2)
+            print(f"    Reconstruction MSE: {recon_mse:.6f}")
+
+        # Test geometric solver on GROUND TRUTH features
+        from graph_cad.utils.geometric_solver import solve_params_from_features
+        try:
+            gt_solved = solve_params_from_features(
+                node_features=gt_features,
+                face_types=gt_face_types,
+                edge_index=np.zeros((2, 0), dtype=np.int64),
+                edge_features=np.zeros((0, 2), dtype=np.float32),
+            )
+            print(f"\n  Geometric Solver on GROUND TRUTH features:")
+            print(f"    leg1: {gt_solved.leg1_length:.2f} (GT: {bracket.leg1_length:.2f})")
+            print(f"    leg2: {gt_solved.leg2_length:.2f} (GT: {bracket.leg2_length:.2f})")
+            print(f"    width: {gt_solved.width:.2f} (GT: {bracket.width:.2f})")
+            print(f"    thickness: {gt_solved.thickness:.2f} (GT: {bracket.thickness:.2f})")
+        except Exception as e:
+            print(f"    Solver failed on GT: {e}")
+
     # =========================================================================
     # Step 4: Apply edit instruction
     # =========================================================================
