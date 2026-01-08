@@ -394,8 +394,8 @@ class VariableGraphVAEConfig:
     # Latent space (larger for variable topology)
     latent_dim: int = 32
 
-    # Decoder architecture
-    decoder_hidden_dims: tuple[int, ...] = (256, 256, 128)
+    # Decoder architecture (reduced from 256,256,128 to prevent posterior collapse)
+    decoder_hidden_dims: tuple[int, ...] = (128, 128, 64)
     decoder_dropout: float = 0.1
 
     # Auxiliary parameter prediction

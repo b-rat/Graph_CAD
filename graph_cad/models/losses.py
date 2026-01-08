@@ -597,9 +597,9 @@ def face_type_classification_loss(
 def variable_vae_loss(
     outputs: dict[str, torch.Tensor],
     targets: dict[str, torch.Tensor],
-    beta: float = 0.01,
+    beta: float = 0.1,
     config: VariableVAELossConfig | None = None,
-    free_bits: float = 2.0,
+    free_bits: float = 0.5,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
     Combined loss for Variable Topology VAE.
@@ -696,10 +696,10 @@ def variable_vae_loss_with_aux(
     outputs: dict[str, torch.Tensor],
     targets: dict[str, torch.Tensor],
     param_target: torch.Tensor,
-    beta: float = 0.01,
+    beta: float = 0.1,
     aux_weight: float = 0.1,
     config: VariableVAELossConfig | None = None,
-    free_bits: float = 2.0,
+    free_bits: float = 0.5,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
     Variable Topology VAE loss with auxiliary parameter prediction.

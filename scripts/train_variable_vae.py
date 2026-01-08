@@ -36,6 +36,37 @@ from graph_cad.models.losses import (
 )
 
 
+def get_beta_schedule(
+    epoch: int,
+    total_epochs: int,
+    warmup_epochs: int,
+    start_beta: float = 0.0,
+    target_beta: float = 0.1,
+) -> float:
+    """
+    Linear beta annealing schedule for KL divergence.
+
+    Starts at start_beta and linearly increases to target_beta over warmup_epochs.
+    This prevents posterior collapse by allowing the encoder to learn good
+    reconstructions first before the KL penalty kicks in.
+
+    Args:
+        epoch: Current epoch (1-indexed).
+        total_epochs: Total number of training epochs.
+        warmup_epochs: Number of epochs to anneal beta.
+        start_beta: Starting beta value (default 0.0).
+        target_beta: Target beta value after warmup.
+
+    Returns:
+        Beta value for current epoch.
+    """
+    if epoch <= warmup_epochs:
+        # Linear annealing from start_beta to target_beta
+        progress = epoch / warmup_epochs
+        return start_beta + (target_beta - start_beta) * progress
+    return target_beta
+
+
 def train_epoch(
     model: VariableGraphVAE,
     train_loader,
@@ -280,11 +311,19 @@ def main():
     parser.add_argument("--weight-decay", type=float, default=1e-4, help="Weight decay")
 
     # Loss arguments
-    parser.add_argument("--target-beta", type=float, default=0.01, help="KL weight")
-    parser.add_argument("--free-bits", type=float, default=2.0, help="Free bits per dim")
+    parser.add_argument("--target-beta", type=float, default=0.1,
+                        help="Target KL weight (default 0.1, increased from 0.01 to prevent posterior collapse)")
+    parser.add_argument("--free-bits", type=float, default=0.5,
+                        help="Free bits per dim (default 0.5, reduced from 2.0 to prevent collapse)")
+    parser.add_argument("--beta-warmup-epochs", type=int, default=None,
+                        help="Epochs to anneal beta from 0 to target (default: 50%% of epochs)")
     parser.add_argument("--mask-weight", type=float, default=1.0, help="Mask prediction weight")
     parser.add_argument("--face-type-weight", type=float, default=0.5, help="Face type classification weight")
     parser.add_argument("--aux-weight", type=float, default=0.0, help="Auxiliary parameter loss weight")
+
+    # Decoder architecture (to control capacity)
+    parser.add_argument("--decoder-hidden-dims", type=str, default="128,128,64",
+                        help="Decoder hidden dims, comma-separated (default: 128,128,64, reduced from 256,256,128)")
 
     # Output arguments
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/vae_variable"), help="Output directory")
@@ -330,6 +369,14 @@ def main():
     )
     print(f"Dataset creation took {time.time() - start_time:.1f}s")
 
+    # Parse decoder hidden dims
+    decoder_hidden_dims = tuple(int(d.strip()) for d in args.decoder_hidden_dims.split(","))
+
+    # Compute beta warmup epochs (default: 50% of total epochs)
+    beta_warmup_epochs = args.beta_warmup_epochs
+    if beta_warmup_epochs is None:
+        beta_warmup_epochs = args.epochs // 2
+
     # Create model
     config = VariableGraphVAEConfig(
         node_features=13,  # area, dir_xyz, centroid_xyz, curv, bbox_diagonal, bbox_center_xyz
@@ -344,6 +391,7 @@ def main():
         latent_dim=args.latent_dim,
         encoder_dropout=args.dropout,
         decoder_dropout=args.dropout,
+        decoder_hidden_dims=decoder_hidden_dims,
         use_param_head=args.aux_weight > 0,
         num_params=4,  # leg1, leg2, width, thickness
     )
@@ -353,7 +401,8 @@ def main():
     print(f"\nModel: {num_params:,} trainable parameters")
     print(f"  Latent dim: {config.latent_dim}")
     print(f"  Face embed dim: {config.face_embed_dim}")
-    print(f"  Hidden dim: {config.hidden_dim}")
+    print(f"  Encoder hidden dim: {config.hidden_dim}")
+    print(f"  Decoder hidden dims: {config.decoder_hidden_dims}")
 
     # Loss config
     loss_config = VariableVAELossConfig(
@@ -368,45 +417,70 @@ def main():
 
     # Training
     print(f"\nTraining for {args.epochs} epochs...")
-    print(f"  Beta: {args.target_beta}, Free bits: {args.free_bits}")
+    print(f"  Target beta: {args.target_beta}, Free bits: {args.free_bits}")
+    print(f"  Beta warmup: {beta_warmup_epochs} epochs (annealing from 0 to {args.target_beta})")
+    print(f"  Decoder dims: {decoder_hidden_dims}")
     print("-" * 120)
 
     best_val_loss = float("inf")
-    history = {"train": [], "val": []}
+    history = {"train": [], "val": [], "latent": []}
 
     for epoch in range(1, args.epochs + 1):
         epoch_start = time.time()
 
+        # Compute beta for this epoch (KL annealing)
+        beta = get_beta_schedule(
+            epoch=epoch,
+            total_epochs=args.epochs,
+            warmup_epochs=beta_warmup_epochs,
+            start_beta=0.0,
+            target_beta=args.target_beta,
+        )
+
         # Train
         train_metrics = train_epoch(
-            model, train_loader, optimizer, args.target_beta, device,
+            model, train_loader, optimizer, beta, device,
             loss_config, args.free_bits, args.aux_weight
         )
 
         # Validate
         val_metrics = evaluate(
-            model, val_loader, args.target_beta, device,
+            model, val_loader, beta, device,
             loss_config, args.free_bits, args.aux_weight
         )
+
+        # Compute latent metrics for collapse monitoring
+        latent_metrics = compute_latent_metrics(model, val_loader, device)
 
         scheduler.step()
 
         history["train"].append(train_metrics)
         history["val"].append(val_metrics)
+        history["latent"].append(latent_metrics)
 
-        # Log
+        # Log with latent health indicators
         epoch_time = time.time() - epoch_start
+        active_dims = latent_metrics["active_dims"]
+        mean_std = latent_metrics["mean_std"]
+        kl_prior = latent_metrics["kl_from_prior"]
+
+        # Collapse warning
+        collapse_warning = ""
+        if active_dims < config.latent_dim * 0.5:
+            collapse_warning = " ⚠️ COLLAPSE"
+        elif mean_std < 0.3:
+            collapse_warning = " ⚠️ LOW_STD"
+
         print(
             f"Epoch {epoch:3d}/{args.epochs} | "
+            f"β={beta:.3f} | "
             f"Train: {train_metrics['loss']:.4f} | "
             f"Val: {val_metrics['loss']:.4f} | "
             f"Recon: {val_metrics['recon_loss']:.4f} | "
             f"KL: {val_metrics['kl_loss']:.4f} | "
-            f"Mask: {val_metrics['mask_loss']:.4f} | "
-            f"FaceType: {val_metrics['face_type_loss']:.4f} | "
-            f"NodeAcc: {val_metrics['node_mask_acc']:.1%} | "
-            f"FTAcc: {val_metrics['face_type_acc']:.1%} | "
-            f"Time: {epoch_time:.1f}s"
+            f"Active: {active_dims}/{config.latent_dim} | "
+            f"Std: {mean_std:.3f} | "
+            f"KL_prior: {kl_prior:.1f}{collapse_warning}"
         )
 
         # Save best
