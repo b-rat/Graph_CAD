@@ -24,6 +24,9 @@ echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc # changes defa
 source ~/.bashrc            # re-read bash file
 apt update && apt install tmux -y
 apt-get update && apt-get install -y libxrender1 libxext6
+apt install jq # installed jq viewer for .json
+jq . filename.json # to view file
+jq 'length' filename.json # count items in the file
 git add -f outputs/latent_editor/best_model.pt
 git add -f outputs/latent_editor/training_results.json
 git commit -m "Add trained latent editor checkpoint"
@@ -399,4 +402,34 @@ TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
     --latent-dim 32 --direction-weight 0.5 \
     --epochs 20 --batch-size 8 --gradient-accumulation 4 \
     --output-dir outputs/latent_editor_variable_13d
+```
+
+```bash
+python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_13d/best_model.pt \
+    --num-samples 50000 \
+    --delta-fraction 0.15 \
+    --output data/simple_edit_data && \
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_variable_13d \
+    --latent-dim 32 --direction-weight 0 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_variable_13d
+```
+
+```bash
+python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_13d/best_model.pt \
+    --num-samples 50000 \
+    --delta-fraction 0.15 \
+    --output data/simple_edit_data \
+    --device cuda && \
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/simple_edit_data \
+    --latent-dim 32 \
+    --direction-weight 0 \
+    --epochs 20 \
+    --batch-size 8 \
+    --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_simple
 ```

@@ -359,12 +359,43 @@ def encode_graph(vae, graph, device: str) -> torch.Tensor:
     return z
 
 
-def decode_latent(vae, z: torch.Tensor) -> tuple[np.ndarray, np.ndarray]:
-    """Decode latent vector to graph features."""
-    with torch.no_grad():
-        node_recon, edge_recon = vae.decode(z)
+def decode_latent(vae, z: torch.Tensor) -> dict:
+    """Decode latent vector to graph features.
 
-    return node_recon.cpu().numpy()[0], edge_recon.cpu().numpy()[0]
+    Returns dict with:
+        - node_features: (num_nodes, node_dim) numpy array
+        - edge_features: (num_edges, edge_dim) numpy array
+        - face_types: (num_nodes,) numpy array (for VariableGraphVAE)
+        - node_mask: (num_nodes,) numpy array (for VariableGraphVAE)
+    """
+    with torch.no_grad():
+        output = vae.decode(z)
+
+    # Handle both dict output (VariableGraphVAE) and tuple output (GraphVAE)
+    if isinstance(output, dict):
+        # VariableGraphVAE returns dict with logits
+        node_features = output["node_features"].cpu().numpy()[0]
+        edge_features = output["edge_features"].cpu().numpy()[0]
+
+        # Convert logits to predictions
+        node_mask = (torch.sigmoid(output["node_mask_logits"]) > 0.5).cpu().numpy()[0]
+        face_types = output["face_type_logits"].argmax(dim=-1).cpu().numpy()[0]
+
+        return {
+            "node_features": node_features,
+            "edge_features": edge_features,
+            "face_types": face_types,
+            "node_mask": node_mask,
+        }
+    else:
+        # GraphVAE returns tuple (node_recon, edge_recon)
+        node_recon, edge_recon = output
+        return {
+            "node_features": node_recon.cpu().numpy()[0],
+            "edge_features": edge_recon.cpu().numpy()[0],
+            "face_types": None,
+            "node_mask": None,
+        }
 
 
 def print_graph_comparison(
@@ -653,7 +684,9 @@ def main():
     print(f"  ‖z‖ = {z_src.norm().item():.4f}")
 
     # Decode to verify reconstruction
-    orig_node_recon, orig_edge_recon = decode_latent(vae, z_src)
+    orig_decoded = decode_latent(vae, z_src)
+    orig_node_recon = orig_decoded["node_features"]
+    orig_edge_recon = orig_decoded["edge_features"]
     print(f"  Reconstruction check: node_shape={orig_node_recon.shape}, edge_shape={orig_edge_recon.shape}")
 
     # =========================================================================
@@ -695,7 +728,9 @@ def main():
     print("STEP 5: Decoding Edited Latent")
     print("=" * 60)
 
-    edit_node_recon, edit_edge_recon = decode_latent(vae, z_edited)
+    edit_decoded = decode_latent(vae, z_edited)
+    edit_node_recon = edit_decoded["node_features"]
+    edit_edge_recon = edit_decoded["edge_features"]
     print(f"  Decoded graph: node_shape={edit_node_recon.shape}, edge_shape={edit_edge_recon.shape}")
 
     # =========================================================================
@@ -711,8 +746,74 @@ def main():
     edited_bracket = None
     param_names = None
     use_latent_regressor = False
+    use_geometric_solver = False
 
-    # Check for regressors in order of priority
+    # Try geometric solver first (preferred for VariableGraphVAE with 13D features)
+    if edit_decoded.get("face_types") is not None and edit_decoded.get("node_mask") is not None:
+        from graph_cad.utils.geometric_solver import solve_params_from_features
+        from graph_cad.data.l_bracket import VariableLBracket
+
+        use_geometric_solver = True
+        print("  Using Geometric Solver (deterministic parameter extraction)")
+
+        try:
+            # Solve original params
+            orig_solved = solve_params_from_features(
+                node_features=orig_decoded["node_features"],
+                face_types=orig_decoded["face_types"],
+                edge_index=np.zeros((2, 0), dtype=np.int64),  # Not needed for solving
+                edge_features=np.zeros((0, 2), dtype=np.float32),
+                node_mask=orig_decoded["node_mask"].astype(np.float32),
+            )
+            param_names = ["leg1_length", "leg2_length", "width", "thickness"]
+            orig_params_pred = np.array([
+                orig_solved.leg1_length,
+                orig_solved.leg2_length,
+                orig_solved.width,
+                orig_solved.thickness,
+            ])
+
+            # Create original bracket from solved params
+            try:
+                predicted_original_bracket = VariableLBracket(**orig_solved.to_dict())
+                n_holes = predicted_original_bracket.num_holes_leg1 + predicted_original_bracket.num_holes_leg2
+                has_fillet = "with fillet" if predicted_original_bracket.has_fillet else "no fillet"
+                print(f"  Original: {n_holes} holes, {has_fillet}")
+            except ValueError as e:
+                print(f"  Warning: Could not create original bracket: {e}")
+                predicted_original_bracket = None
+
+            # Solve edited params
+            edit_solved = solve_params_from_features(
+                node_features=edit_decoded["node_features"],
+                face_types=edit_decoded["face_types"],
+                edge_index=np.zeros((2, 0), dtype=np.int64),
+                edge_features=np.zeros((0, 2), dtype=np.float32),
+                node_mask=edit_decoded["node_mask"].astype(np.float32),
+            )
+            edit_params_pred = np.array([
+                edit_solved.leg1_length,
+                edit_solved.leg2_length,
+                edit_solved.width,
+                edit_solved.thickness,
+            ])
+
+            # Create edited bracket from solved params
+            try:
+                edited_bracket = VariableLBracket(**edit_solved.to_dict())
+                n_holes = edited_bracket.num_holes_leg1 + edited_bracket.num_holes_leg2
+                has_fillet = "with fillet" if edited_bracket.has_fillet else "no fillet"
+                print(f"  Edited: {n_holes} holes, {has_fillet}")
+            except ValueError as e:
+                print(f"  Warning: Could not create edited bracket: {e}")
+                edited_bracket = None
+
+        except Exception as e:
+            print(f"  Geometric solver failed: {e}")
+            print("  Falling back to regressor...")
+            use_geometric_solver = False
+
+    # Check for regressors in order of priority (only used if geometric solver fails)
     full_latent_regressor_path = Path(args.full_latent_regressor_checkpoint) if args.full_latent_regressor_checkpoint else None
     latent_regressor_path = Path(args.latent_regressor_checkpoint) if args.latent_regressor_checkpoint else None
     regressor_path = Path(args.regressor_checkpoint)
@@ -726,7 +827,8 @@ def main():
     full_regressor_outputs_edit = None
     use_full_regressor = False
 
-    if full_latent_regressor_path and full_latent_regressor_path.exists():
+    # Only use regressors if geometric solver wasn't used or failed
+    if not use_geometric_solver and full_latent_regressor_path and full_latent_regressor_path.exists():
         # Use full latent regressor (z → ALL params, can generate STEP)
         use_full_regressor = True
         use_latent_regressor = True
@@ -759,7 +861,7 @@ def main():
 
         print("  Using FullLatentRegressor (z → ALL params, can generate STEP)")
 
-    elif latent_regressor_path and latent_regressor_path.exists():
+    elif not use_geometric_solver and latent_regressor_path and latent_regressor_path.exists():
         # Use simple latent regressor (z → 4 core params only)
         use_latent_regressor = True
         latent_regressor, latent_reg_config = load_latent_regressor(
@@ -788,7 +890,7 @@ def main():
 
         print("  Using LatentRegressor (z → 4 core params, cannot generate STEP)")
 
-    elif regressor_path.exists():
+    elif not use_geometric_solver and regressor_path.exists():
         # Use feature regressor (decode → features → params)
         regressor, regressor_type = load_feature_regressor(args.regressor_checkpoint, device)
 
@@ -833,10 +935,11 @@ def main():
 
         print(f"  Using FeatureRegressor ({regressor_type} topology, decode → features → {len(param_names)} params)")
 
-    else:
-        print(f"  No regressor checkpoint found.")
-        print("  Options:")
-        print(f"    --full-latent-regressor-checkpoint outputs/full_latent_regressor/best_model.pt  (recommended, generates STEP)")
+    elif not use_geometric_solver:
+        print(f"  No parameter extraction method available.")
+        print("  For VariableGraphVAE with 13D features, use --vae-checkpoint outputs/vae_variable_13d/best_model.pt")
+        print("  Fallback options:")
+        print(f"    --full-latent-regressor-checkpoint outputs/full_latent_regressor/best_model.pt  (generates STEP)")
         print(f"    --latent-regressor-checkpoint outputs/latent_regressor/best_model.pt  (4 core params only)")
         print(f"    --regressor-checkpoint outputs/feature_regressor/best_model.pt  (via decoder)")
 
