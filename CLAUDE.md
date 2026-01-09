@@ -519,12 +519,77 @@ Implemented coordinated fixes in `train_variable_vae.py`:
 - Old decoder: ~150K params
 - New decoder: ~50K params
 
-**Expected Improvements:**
-- KL loss: 2-5 nats (from ~0.008)
-- Active dims: 28-32/32 (from 8/32)
-- Latent mean std: 0.8-1.0 (from 0.13)
+### VAE v4 Training Results — Collapse Fixed ✓
 
-**Checkpoint:** `outputs/vae_variable_v4/best_model.pt` (pending training)
+| Metric | VAE v3 (Collapsed) | VAE v4 (Fixed) | Target |
+|--------|-------------------|----------------|--------|
+| Active dims | 8/32 (25%) | **32/32 (100%)** | >80% |
+| Mean std | 0.13 | **0.59** | ~1.0 |
+| KL from prior | 0.008 nats | **13.26 nats** | >5 |
+| Face type acc | 100% | **100%** | - |
+| Node mask acc | 100% | **98.4%** | - |
+
+**Training progression:**
+```
+Epoch   1 | β=0.002 | KL=31.8 | Active=30/32 | Std=0.78
+Epoch  50 | β=0.100 | KL=0.55 | Active=32/32 | Std=0.57
+Epoch 100 | β=0.100 | KL=0.33 | Active=32/32 | Std=0.59
+```
+
+**Assessment:** Beta annealing worked. All 32 dimensions active, meaningful KL. Collapse fixed.
+
+**Checkpoint:** `outputs/vae_variable_v4/best_model.pt`
+
+### Decoder Reconstruction vs Geometric Solver (Jan 2026)
+
+**Discovery:** Geometric solver works perfectly on ground truth features, but has large errors on decoded features.
+
+**Test on random bracket:**
+```
+Geometric Solver on GROUND TRUTH:    Geometric Solver on DECODED:
+  leg1: 166.09 (GT: 166.09) → 0%       leg1: 122.46 (GT: 166.09) → 26% error
+  leg2: 115.83 (GT: 115.83) → 0%       leg2: 124.30 (GT: 115.83) → 7% error
+  width: 47.89 (GT: 47.89) → 0%        width: 40.68 (GT: 47.89) → 15% error
+  thickness: 10.73 (GT: 10.73) → 0%    thickness: 5.00 (GT: 10.73) → 53% error (clipped)
+```
+
+**Root cause:** Reconstruction MSE = 0.0085 sounds small, but geometric solver is very sensitive:
+- Small centroid error (0.05) × bbox_diagonal (200mm) = 10mm position error
+- The solver identifies faces by normal directions and centroid positions
+- Decoder noise compounds into large parameter errors
+
+**Architectural insight:** The VAE has asymmetric encoder/decoder:
+- **Encoder**: GAT (Graph Attention) — uses edge_index, message passing, learns from structure
+- **Decoder**: Pure MLP — predicts node features independently, no graph structure
+
+The decoder predicts each node's features from the same z vector without enforcing geometric consistency between adjacent faces. This works for L-brackets because the geometric solver (or template) can recover structure, but limits reconstruction fidelity.
+
+### Two Approaches to Parameter Extraction
+
+| Approach | Path | Status |
+|----------|------|--------|
+| **Geometric Solver** | z → Decode → Features → Solver → Params | 26% error (decoder noise) |
+| **FullLatentRegressor** | z → MLP → Params (bypass decoder) | Testing |
+
+**FullLatentRegressor hypothesis:** If VAE v4's healthy latent encodes geometry meaningfully, a learned regressor might extract parameters better than the deterministic solver because:
+1. Bypasses decoder entirely (no reconstruction noise)
+2. Can learn nonlinear z→params mapping
+3. Trained end-to-end on actual z vectors
+
+**Training command:**
+```bash
+python scripts/train_full_latent_regressor.py \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
+    --train-size 10000 --val-size 1000 --test-size 1000 \
+    --epochs 100 --output-dir outputs/full_latent_regressor_v4
+```
+
+**What to look for:**
+- Core params RMSE < 10% → z encodes params in learnable way
+- Existence accuracy > 95% → topology well-encoded
+- If regressor succeeds but solver failed → decoder is bottleneck, not z-space
+
+**Checkpoint (pending):** `outputs/full_latent_regressor_v4/best_model.pt`
 
 ### Fundamental Limitation
 
@@ -888,14 +953,21 @@ python scripts/infer_latent_editor.py \
 13. ~~**Retrain VAE v3 with aux_weight=0.1**~~ — Done, 62% direction acc, correlations still weak ✓
 14. ~~**Diagnose posterior collapse root cause**~~ — Done, β too low, free_bits too high, decoder overpowered ✓
 15. ~~**Implement collapse fix (v4)**~~ — Done, beta annealing + reduced decoder + new defaults ✓
-16. **Train VAE v4 with collapse fix** — Pending
+16. ~~**Train VAE v4 with collapse fix**~~ — Done, 32/32 active dims, std=0.59 ✓
+17. ~~**Test geometric solver on v4 decoded features**~~ — Done, 26% error (decoder noise too high) ✓
+18. **Train FullLatentRegressor on v4** — In progress
+19. **Compare regressor vs geometric solver** — Pending
+20. **Train latent editor on v4** — Pending
 
 **Current focus:**
-- Train VAE v4 and verify collapse is fixed (expect: active_dims > 28/32, std > 0.8)
-- If collapse fixed, retrain latent editor and test end-to-end pipeline
-- Validate geometric solver works with non-collapsed latents
+- Train FullLatentRegressor to bypass decoder (z → params directly)
+- Compare with geometric solver approach
+- If regressor works, proceed to latent editor training
+- Test full pipeline: encode → edit → regressor → VariableLBracket → STEP
+
+**Key insight:** The decoder's MLP architecture (independent node prediction) limits reconstruction fidelity. The regressor approach bypasses this by learning z→params directly.
 
 **Possible directions forward:**
-- Two-stage approach: latent edits for direction, separate regressor for params
-- Alternative architecture that doesn't rely on graph→latent→params pipeline
-- Focus on fixed topology where 80% accuracy was achieved
+- If regressor works: Full pipeline viable with FullLatentRegressor
+- If regressor fails: z-space itself doesn't encode params well, need architectural changes
+- Alternative: Graph-based decoder (message passing) for better reconstruction
