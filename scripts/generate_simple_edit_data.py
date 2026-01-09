@@ -194,6 +194,7 @@ def generate_single_sample(
     max_nodes: int,
     max_edges: int,
     delta_fraction: float = 0.15,
+    increase_only: bool = False,
 ) -> dict | None:
     """Generate a single edit sample with simple instruction."""
     try:
@@ -203,7 +204,10 @@ def generate_single_sample(
 
         # Pick random parameter and direction
         param = rng.choice(list(SIMPLE_INSTRUCTIONS.keys()))
-        direction = rng.choice(["increase", "decrease"])
+        if increase_only:
+            direction = "increase"
+        else:
+            direction = rng.choice(["increase", "decrease"])
         instruction = rng.choice(SIMPLE_INSTRUCTIONS[param][direction])
 
         # Get current value and compute delta
@@ -304,6 +308,7 @@ def generate_dataset(
     seed: int = 42,
     delta_fraction: float = 0.15,
     noop_ratio: float = 0.1,
+    increase_only: bool = False,
 ) -> list[dict]:
     """Generate full dataset of simple edit samples."""
     rng = np.random.default_rng(seed)
@@ -314,6 +319,8 @@ def generate_dataset(
 
     print(f"Generating {num_edit} edit samples, {num_noop} no-ops")
     print(f"Delta fraction: {delta_fraction:.0%}")
+    if increase_only:
+        print("Direction: INCREASE ONLY")
 
     # Generate edit samples
     pbar = tqdm(total=num_edit, desc="Edit samples")
@@ -322,7 +329,7 @@ def generate_dataset(
 
     while len(samples) < num_edit and attempts < max_attempts:
         sample = generate_single_sample(
-            vae, rng, device, max_nodes, max_edges, delta_fraction
+            vae, rng, device, max_nodes, max_edges, delta_fraction, increase_only
         )
         if sample is not None:
             samples.append(sample)
@@ -423,6 +430,11 @@ def main():
         type=int,
         default=50,
     )
+    parser.add_argument(
+        "--increase-only",
+        action="store_true",
+        help="Only generate increase instructions (no decrease)",
+    )
 
     args = parser.parse_args()
 
@@ -453,6 +465,7 @@ def main():
         seed=args.seed,
         delta_fraction=args.delta_fraction,
         noop_ratio=args.noop_ratio,
+        increase_only=args.increase_only,
     )
 
     # Split
@@ -504,6 +517,7 @@ def main():
         "test_size": len(test_samples),
         "seed": args.seed,
         "instruction_type": "simple_directional",
+        "increase_only": args.increase_only,
     }
 
     with open(output_dir / "metadata.json", "w") as f:
