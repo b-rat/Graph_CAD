@@ -306,37 +306,57 @@ Result:       Low MSE achieved, but direction essentially random
 
 **Critical insight:** Low MSE was misleading in the old approach. The direction classifier (64%) exposed that the model couldn't determine direction — it was achieving low MSE by averaging, not by understanding instructions.
 
-The simplified approach prevents averaging:
-- "make leg1 longer" → ALL samples have same direction (increase)
-- "make leg1 shorter" → ALL samples have opposite direction (decrease)
-- No way to hedge toward zero when all samples agree on direction
+### Revised Understanding: Balanced Simplified Instructions Still Vulnerable (Jan 2026)
+
+The simplified instruction approach with balanced "increase"/"decrease" may still be vulnerable to averaging:
 
 ```
-True deltas:  [+0.15, +0.18, +0.12, ...]  (all positive for "longer")
-Predicted:    [+0.1499, +0.1801, +0.1198, ...]  (must commit to direction)
-Result:       Low MSE requires correct direction AND magnitude
+"make leg1 longer"  → delta_z ≈ +d
+"make leg1 shorter" → delta_z ≈ -d
+
+If model embeddings: embed("longer") ≈ embed("shorter")
+Then optimal strategy: predict delta_z ≈ 0 (minimizes average MSE)
 ```
 
-**Why the new low MSE is meaningful:** With ~0.02% relative error, the model must be predicting both direction and magnitude correctly. The metric now measures what we actually care about.
+**The 0.2% relative error may be misleading** — if the model learns that instruction embeddings for "longer" and "shorter" are similar, it can minimize MSE by predicting near-zero deltas across both.
 
-**Open Questions (To Validate):**
+**Why this happens with normalized data:**
+- All deltas are ±15% (constant magnitude)
+- Balanced dataset: 50% positive, 50% negative
+- Mean delta across dataset ≈ 0
+- Predicting zero achieves low MSE without understanding
 
-1. **Is model personalizing or averaging within instruction type?**
-   - If averaging: predicts mean delta for "make leg1 longer" regardless of z_src
-   - If personalizing: delta varies with z_src (15% of different leg1 values)
-   - Very low MSE (1e-6) suggests personalization, but need to verify
+### Solution: Increase-Only Training (Jan 2026)
 
-2. **Direction accuracy from deltas?**
-   - No explicit direction classifier, but can compute from predicted vs actual delta signs
-   - Expected to be near 100% given low MSE
+Train with only increase instructions to prevent averaging:
 
-**Planned Analysis (Post-Training):**
+```bash
+python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
+    --num-samples 50000 --increase-only \
+    --output data/simple_edit_data_increase_only
+```
 
-1. Scatter plot: predicted vs actual delta_z per dimension
-2. Check if predictions vary appropriately with z_src for same instruction
-3. Per-instruction breakdown of accuracy
-4. Compute implicit direction accuracy from delta signs
-5. End-to-end test: z_src + instruction → z_edited → decode → geometric solver → STEP
+**Why this works:**
+```
+"make leg1 longer"  → delta_z ≈ +d₁
+"make leg2 longer"  → delta_z ≈ +d₂
+"make it wider"     → delta_z ≈ +d₃
+"make it thicker"   → delta_z ≈ +d₄
+
+No opposite directions to average toward zero.
+Model MUST learn:
+  1. Which parameter the instruction refers to
+  2. The correct positive delta for that parameter
+```
+
+**At inference time:** Handle "decrease" by negating the predicted delta (z-space should be roughly symmetric).
+
+**Planned validation:**
+1. Train latent editor with increase-only data
+2. Test on held-out increase instructions (should work)
+3. Test on decrease instructions with negated delta (validates symmetry assumption)
+4. End-to-end: instruction → delta_z → regressor → STEP
 
 ### Critical Bug Found: Bbox Features Not Trained (Jan 2026)
 
