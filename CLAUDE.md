@@ -566,30 +566,40 @@ The decoder predicts each node's features from the same z vector without enforci
 
 ### Two Approaches to Parameter Extraction
 
-| Approach | Path | Status |
-|----------|------|--------|
-| **Geometric Solver** | z → Decode → Features → Solver → Params | 26% error (decoder noise) |
-| **FullLatentRegressor** | z → MLP → Params (bypass decoder) | Testing |
+| Approach | Path | Core Params Error | Topology Detection |
+|----------|------|-------------------|-------------------|
+| **Geometric Solver** | z → Decode → Features → Solver → Params | **26%** | N/A (uses GT) |
+| **FullLatentRegressor** | z → MLP → Params (bypass decoder) | **26%** | **100%** |
 
-**FullLatentRegressor hypothesis:** If VAE v4's healthy latent encodes geometry meaningfully, a learned regressor might extract parameters better than the deterministic solver because:
-1. Bypasses decoder entirely (no reconstruction noise)
-2. Can learn nonlinear z→params mapping
-3. Trained end-to-end on actual z vectors
+**FullLatentRegressor v4 Results — Training Complete ✓**
 
-**Training command:**
-```bash
-python scripts/train_full_latent_regressor.py \
-    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
-    --train-size 10000 --val-size 1000 --test-size 1000 \
-    --epochs 100 --output-dir outputs/full_latent_regressor_v4
-```
+| Metric | Test Value | Interpretation |
+|--------|------------|----------------|
+| **Existence Accuracy** | **100%** | Perfect topology detection |
+| Fillet exists | 100% | ✓ |
+| Hole1 exists | 100% | ✓ |
+| Hole2 exists | 100% | ✓ |
+| Core Params Loss | 0.069 | ~26% RMSE |
+| Fillet Radius Loss | 0.032 | ~18% RMSE |
+| Hole1 Params Loss | 0.098 | ~31% RMSE |
+| Hole2 Params Loss | 0.109 | ~33% RMSE |
 
-**What to look for:**
-- Core params RMSE < 10% → z encodes params in learnable way
-- Existence accuracy > 95% → topology well-encoded
-- If regressor succeeds but solver failed → decoder is bottleneck, not z-space
+**Converting to Real Units (given parameter ranges):**
+- leg1/leg2 (50-200mm range): ~**39mm** RMSE (26%)
+- width (20-60mm range): ~**10mm** RMSE (26%)
+- thickness (3-12mm range): ~**2.4mm** RMSE (26%)
 
-**Checkpoint (pending):** `outputs/full_latent_regressor_v4/best_model.pt`
+**Checkpoint:** `outputs/full_latent_regressor_v4/best_model.pt`
+
+### Critical Finding: Z-Space Doesn't Encode Parameters (Jan 2026)
+
+Both the geometric solver AND learned regressor achieve ~26% error. This confirms:
+
+1. **The bottleneck is the encoder, not the decoder** — bypassing the decoder didn't help
+2. **VAE v4's z-space encodes geometry/topology, not parameters** — even with collapse fixed (32/32 active dims), the latent doesn't encode parameter values in an extractable way
+3. **Topology detection works perfectly** — the z-space encodes structure (presence of holes/fillet) well, just not continuous parameter values
+
+This matches the earlier weak correlation analysis (r < 0.25 between z-dims and params).
 
 ### Fundamental Limitation
 
@@ -599,12 +609,18 @@ The graph-based VAE architecture fundamentally struggles with parameter-aware la
 2. **Decoder**: MLP reconstructs geometry → doesn't need linear param structure
 3. **aux_loss**: Forces linear param prediction from z, but can't change encoder behavior
 
-**Possible directions:**
+**Approaches tried:**
 1. ~~**Much higher aux_weight** (0.5-1.0)~~ — Tried, didn't help (collapse was the real issue)
-2. **Fix posterior collapse first** — Now implemented in v4 ✓
-3. **ParameterVAE** — decode to params directly (tried, 64% ceiling)
-4. **Two-stage**: z-edits for direction, separate regressor for magnitude
-5. **Accept limitation**: System encodes geometry well, but latent edits don't map to parameter changes reliably
+2. ~~**Fix posterior collapse first**~~ — Implemented in v4 ✓, but didn't fix param encoding
+3. ~~**ParameterVAE**~~ — decode to params directly (tried, 64% ceiling)
+4. ~~**FullLatentRegressor**~~ — bypass decoder (tried, same 26% error as solver)
+5. **Accept limitation**: System encodes geometry/topology well, but z-space doesn't encode continuous params
+
+**Possible directions forward:**
+1. **Different encoder architecture** — Parameter-aware GNN that explicitly tracks dimensions
+2. **Disentangled VAE** — β-VAE or FactorVAE to encourage interpretable latent dims
+3. **Hybrid approach** — Use VAE for topology only, separate parameter encoder
+4. **Direct parameter editing** — Skip latent space, LLM outputs parameter deltas directly
 
 ### Legacy: ParameterVAE
 
@@ -901,6 +917,10 @@ python scripts/infer_latent_editor.py \
 
 ## Model Checkpoints
 
+**Current (VAE v4 + Collapse Fix):**
+- `outputs/vae_variable_v4/best_model.pt` — VariableGraphVAE v4 (32/32 active dims) ✓
+- `outputs/full_latent_regressor_v4/best_model.pt` — FullLatentRegressor (100% topology, 26% params) ✓
+
 **Current (Simplified Instructions + 13D VAE):**
 - `outputs/vae_variable_13d/best_model.pt` — VariableGraphVAE with 13D features ✓
 - `outputs/latent_editor_simple/best_model.pt` — **0.2% relative error** ✓
@@ -954,20 +974,28 @@ python scripts/infer_latent_editor.py \
 14. ~~**Diagnose posterior collapse root cause**~~ — Done, β too low, free_bits too high, decoder overpowered ✓
 15. ~~**Implement collapse fix (v4)**~~ — Done, beta annealing + reduced decoder + new defaults ✓
 16. ~~**Train VAE v4 with collapse fix**~~ — Done, 32/32 active dims, std=0.59 ✓
-17. ~~**Test geometric solver on v4 decoded features**~~ — Done, 26% error (decoder noise too high) ✓
-18. **Train FullLatentRegressor on v4** — In progress
-19. **Compare regressor vs geometric solver** — Pending
-20. **Train latent editor on v4** — Pending
+17. ~~**Test geometric solver on v4 decoded features**~~ — Done, 26% error (decoder noise) ✓
+18. ~~**Train FullLatentRegressor on v4**~~ — Done, 26% error (same as solver) ✓
+19. ~~**Compare regressor vs geometric solver**~~ — Done, both ~26% error ✓
+20. **Architectural decision** — Pending
 
-**Current focus:**
-- Train FullLatentRegressor to bypass decoder (z → params directly)
-- Compare with geometric solver approach
-- If regressor works, proceed to latent editor training
-- Test full pipeline: encode → edit → regressor → VariableLBracket → STEP
+**Key Finding (Jan 2026):**
 
-**Key insight:** The decoder's MLP architecture (independent node prediction) limits reconstruction fidelity. The regressor approach bypasses this by learning z→params directly.
+The GNN encoder doesn't encode continuous parameters in z-space, regardless of:
+- Decoder architecture (MLP vs parameter decoder)
+- Extraction method (geometric solver vs learned regressor)
+- Posterior collapse fix (healthy latent doesn't help)
+
+**What works:**
+- Topology detection: 100% accuracy (z encodes structure)
+- Simplified instructions: 0.2% error predicting z_delta (LLM understands direction)
+
+**What doesn't work:**
+- Parameter extraction from z: ~26% error (z doesn't encode params)
+- End-to-end with geometric solver: 26% error (decoder noise + z limitation)
 
 **Possible directions forward:**
-- If regressor works: Full pipeline viable with FullLatentRegressor
-- If regressor fails: z-space itself doesn't encode params well, need architectural changes
-- Alternative: Graph-based decoder (message passing) for better reconstruction
+1. **Accept topology-only** — Use VAE for topology changes, direct param editing otherwise
+2. **Different encoder** — Parameter-aware architecture that explicitly encodes dimensions
+3. **Disentangled VAE** — β-VAE or FactorVAE for interpretable latent dims
+4. **Skip latent space** — LLM directly outputs parameter deltas (simpler architecture)
