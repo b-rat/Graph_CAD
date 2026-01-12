@@ -492,3 +492,95 @@ TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
     --epochs 20 --batch-size 8 --gradient-accumulation 4 \
     --output-dir outputs/latent_editor_simple_v3
 ```
+
+```bash
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/vae_variable_v4 && \
+python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_13d_v4/best_model.pt \
+    --num-samples 50000 --delta-fraction 0.15 \
+    --output data/simple_edit_data_v4 && \
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/simple_edit_data_v4 \
+    --latent-dim 32 --direction-weight 0 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_simple_v4
+```
+
+```bash
+python scripts/train_variable_vae.py \
+    --train-size 5000 --val-size 500 --test-size 500 \
+    --epochs 100 --latent-dim 32 \
+    --output-dir outputs/vae_variable_v4 \
+&& python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
+    --num-samples 50000 --delta-fraction 0.15 \
+    --output data/simple_edit_data_v4 \
+&& TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/simple_edit_data_v4 \
+    --latent-dim 32 --direction-weight 0 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_v4
+```
+
+```bash
+python scripts/train_full_latent_regressor.py \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
+    --train-size 10000 \
+    --val-size 1000 \
+    --test-size 1000 \
+    --batch-size 128 \
+    --hidden-dim 256 \
+    --num-layers 3 \
+    --epochs 100 \
+    --lr 1e-3 \
+    --output-dir outputs/full_latent_regressor_v4 \
+    --cache-dir data/regressor_cache
+```
+
+```bash
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 longer" \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_v4/best_model.pt \
+    --output-dir outputs/inference_test \
+    --seed $RANDOM \
+    --verbose
+```
+
+```bash
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 longer" \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_simple/best_model.pt \
+    --full-latent-regressor-checkpoint outputs/full_latent_regressor_v4/best_model.pt
+```
+
+```bash
+python scripts/generate_simple_edit_data.py \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
+    --num-samples 50000 \
+    --delta-fraction 0.15 \
+    --increase-only \
+    --output data/simple_edit_data_increase_only \
+&& TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/simple_edit_data_increase_only \
+    --latent-dim 32 --direction-weight 0 \
+    --epochs 20 --batch-size 8 --gradient-accumulation 4 \
+    --output-dir outputs/latent_editor_increase_only
+```
+
+```bash
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 longer" \
+    --vae-checkpoint outputs/vae_variable_v4/best_model.pt \
+    --editor-checkpoint outputs/latent_editor_increase_only/best_model.pt \
+    --output-dir outputs/inference_test \
+    --seed $RANDOM \
+    --verbose
+```
