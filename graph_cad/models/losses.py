@@ -734,3 +734,437 @@ def variable_vae_loss_with_aux(
     loss_dict["total_loss"] = total_loss.detach()
 
     return total_loss, loss_dict
+
+
+# =============================================================================
+# Hungarian Matching Loss (Phase 3 - Transformer Decoder)
+# =============================================================================
+
+
+@dataclass
+class HungarianLossConfig:
+    """Configuration for Hungarian matching loss."""
+
+    # Cost matrix weights (for matching)
+    node_feature_cost_weight: float = 1.0
+    face_type_cost_weight: float = 2.0  # Higher weight for topology correctness
+    existence_cost_weight: float = 1.0
+
+    # Loss weights (after matching)
+    node_feature_loss_weight: float = 1.0
+    face_type_loss_weight: float = 2.0
+    existence_loss_weight: float = 1.0
+    edge_loss_weight: float = 1.0
+
+    # Edge class imbalance handling
+    edge_positive_weight: float = 3.0  # Weight for positive edges (sparse)
+
+
+@torch.no_grad()
+def compute_hungarian_matching(
+    pred_features: torch.Tensor,
+    pred_face_types: torch.Tensor,
+    pred_existence: torch.Tensor,
+    target_features: torch.Tensor,
+    target_face_types: torch.Tensor,
+    target_mask: torch.Tensor,
+    config: HungarianLossConfig | None = None,
+) -> list[tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Compute optimal Hungarian matching between predictions and targets.
+
+    For each sample in the batch, finds the optimal assignment of predicted
+    nodes to ground truth nodes that minimizes the total cost.
+
+    Args:
+        pred_features: Predicted node features, shape (batch, max_nodes, node_features)
+        pred_face_types: Predicted face type logits, shape (batch, max_nodes, num_types)
+        pred_existence: Predicted existence logits, shape (batch, max_nodes)
+        target_features: Target node features, shape (batch, max_nodes, node_features)
+        target_face_types: Target face type indices, shape (batch, max_nodes)
+        target_mask: Target node mask (1=real, 0=padding), shape (batch, max_nodes)
+        config: Loss configuration
+
+    Returns:
+        List of (pred_indices, target_indices) tuples, one per batch sample.
+        Each tuple contains tensors of matched indices.
+    """
+    from scipy.optimize import linear_sum_assignment
+
+    if config is None:
+        config = HungarianLossConfig()
+
+    batch_size = pred_features.shape[0]
+    max_nodes = pred_features.shape[1]
+    device = pred_features.device
+
+    matchings = []
+
+    for b in range(batch_size):
+        # Get number of real nodes for this sample
+        num_real = int(target_mask[b].sum().item())
+
+        if num_real == 0:
+            # No real nodes - return empty matching
+            matchings.append((
+                torch.tensor([], dtype=torch.long, device=device),
+                torch.tensor([], dtype=torch.long, device=device)
+            ))
+            continue
+
+        # Compute cost matrix: (max_nodes predictions) x (num_real targets)
+        # Cost = MSE(features) + CE(face_type) + BCE(existence)
+
+        # Node feature cost: L2 distance
+        # pred: (max_nodes, features), target: (num_real, features)
+        pred_feat_b = pred_features[b]  # (max_nodes, features)
+        target_feat_b = target_features[b, :num_real]  # (num_real, features)
+
+        # Pairwise L2 distance: (max_nodes, num_real)
+        feat_cost = torch.cdist(pred_feat_b, target_feat_b, p=2)
+
+        # Face type cost: negative log probability of correct class
+        # pred_face_types[b]: (max_nodes, num_types) logits
+        # target_face_types[b, :num_real]: (num_real,) indices
+        pred_probs = F.softmax(pred_face_types[b], dim=-1)  # (max_nodes, num_types)
+        target_types_b = target_face_types[b, :num_real]  # (num_real,)
+
+        # For each prediction i and target j, cost = -log(pred_probs[i, target_types[j]])
+        face_type_cost = torch.zeros(max_nodes, num_real, device=device)
+        for j in range(num_real):
+            target_type = target_types_b[j].long()
+            face_type_cost[:, j] = -torch.log(pred_probs[:, target_type] + 1e-8)
+
+        # Existence cost: BCE between predicted existence and 1 (real nodes)
+        # For matching, we want predictions with high existence prob to match real nodes
+        pred_exist_prob = torch.sigmoid(pred_existence[b])  # (max_nodes,)
+        # Cost = -log(prob) for matching to real node (want high prob)
+        exist_cost = -torch.log(pred_exist_prob + 1e-8).unsqueeze(1)  # (max_nodes, 1)
+        exist_cost = exist_cost.expand(-1, num_real)  # (max_nodes, num_real)
+
+        # Combined cost
+        total_cost = (
+            config.node_feature_cost_weight * feat_cost
+            + config.face_type_cost_weight * face_type_cost
+            + config.existence_cost_weight * exist_cost
+        )
+
+        # Hungarian algorithm (on CPU, as scipy doesn't support GPU)
+        cost_np = total_cost.cpu().numpy()
+        pred_idx, target_idx = linear_sum_assignment(cost_np)
+
+        matchings.append((
+            torch.tensor(pred_idx, dtype=torch.long, device=device),
+            torch.tensor(target_idx, dtype=torch.long, device=device)
+        ))
+
+    return matchings
+
+
+def hungarian_node_loss(
+    pred_features: torch.Tensor,
+    pred_face_types: torch.Tensor,
+    pred_existence: torch.Tensor,
+    target_features: torch.Tensor,
+    target_face_types: torch.Tensor,
+    target_mask: torch.Tensor,
+    matchings: list[tuple[torch.Tensor, torch.Tensor]],
+    config: HungarianLossConfig | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Compute node-level losses using Hungarian matching.
+
+    Args:
+        pred_features: Predicted node features, shape (batch, max_nodes, node_features)
+        pred_face_types: Predicted face type logits, shape (batch, max_nodes, num_types)
+        pred_existence: Predicted existence logits, shape (batch, max_nodes)
+        target_features: Target node features, shape (batch, max_nodes, node_features)
+        target_face_types: Target face type indices, shape (batch, max_nodes)
+        target_mask: Target node mask, shape (batch, max_nodes)
+        matchings: List of (pred_indices, target_indices) from compute_hungarian_matching
+        config: Loss configuration
+
+    Returns:
+        total_loss: Combined node loss
+        loss_dict: Component losses for logging
+    """
+    if config is None:
+        config = HungarianLossConfig()
+
+    batch_size = pred_features.shape[0]
+    max_nodes = pred_features.shape[1]
+    device = pred_features.device
+
+    # Accumulate losses
+    total_feat_loss = torch.tensor(0.0, device=device)
+    total_type_loss = torch.tensor(0.0, device=device)
+    total_exist_loss = torch.tensor(0.0, device=device)
+    total_matched = 0
+
+    for b, (pred_idx, target_idx) in enumerate(matchings):
+        num_matched = len(pred_idx)
+        if num_matched == 0:
+            continue
+
+        # Node feature loss (MSE on matched pairs)
+        matched_pred_feat = pred_features[b, pred_idx]  # (num_matched, features)
+        matched_target_feat = target_features[b, target_idx]  # (num_matched, features)
+        feat_loss = F.mse_loss(matched_pred_feat, matched_target_feat, reduction='sum')
+        total_feat_loss = total_feat_loss + feat_loss
+
+        # Face type loss (CE on matched pairs)
+        matched_pred_types = pred_face_types[b, pred_idx]  # (num_matched, num_types)
+        matched_target_types = target_face_types[b, target_idx]  # (num_matched,)
+        type_loss = F.cross_entropy(
+            matched_pred_types, matched_target_types.long(), reduction='sum'
+        )
+        total_type_loss = total_type_loss + type_loss
+
+        total_matched += num_matched
+
+    # Existence loss: all predictions vs target mask
+    # Matched predictions should have high existence, unmatched should have low
+    exist_target = torch.zeros_like(pred_existence)
+    for b, (pred_idx, _) in enumerate(matchings):
+        if len(pred_idx) > 0:
+            exist_target[b, pred_idx] = 1.0
+
+    total_exist_loss = F.binary_cross_entropy_with_logits(
+        pred_existence, exist_target, reduction='mean'
+    )
+
+    # Normalize by number of matched nodes
+    if total_matched > 0:
+        total_feat_loss = total_feat_loss / total_matched
+        total_type_loss = total_type_loss / total_matched
+
+    # Combined loss
+    total_loss = (
+        config.node_feature_loss_weight * total_feat_loss
+        + config.face_type_loss_weight * total_type_loss
+        + config.existence_loss_weight * total_exist_loss
+    )
+
+    # Compute accuracy metrics
+    with torch.no_grad():
+        # Face type accuracy on matched nodes
+        correct_types = 0
+        for b, (pred_idx, target_idx) in enumerate(matchings):
+            if len(pred_idx) > 0:
+                pred_types = pred_face_types[b, pred_idx].argmax(dim=-1)
+                target_types = target_face_types[b, target_idx]
+                correct_types += (pred_types == target_types).sum().item()
+        face_type_acc = correct_types / max(total_matched, 1)
+
+        # Existence accuracy
+        exist_pred = (torch.sigmoid(pred_existence) > 0.5).float()
+        exist_acc = (exist_pred == exist_target).float().mean().item()
+
+    loss_dict = {
+        "node_feature_loss": total_feat_loss.detach(),
+        "face_type_loss": total_type_loss.detach(),
+        "existence_loss": total_exist_loss.detach(),
+        "face_type_acc": torch.tensor(face_type_acc),
+        "existence_acc": torch.tensor(exist_acc),
+        "num_matched": torch.tensor(total_matched),
+    }
+
+    return total_loss, loss_dict
+
+
+def hungarian_edge_loss_with_adj(
+    pred_edge_logits: torch.Tensor,
+    target_adj: torch.Tensor,
+    target_mask: torch.Tensor,
+    matchings: list[tuple[torch.Tensor, torch.Tensor]],
+    config: HungarianLossConfig | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Compute edge loss using Hungarian matching with target adjacency matrix.
+
+    Args:
+        pred_edge_logits: Predicted edge logits, shape (batch, max_nodes, max_nodes)
+        target_adj: Target adjacency matrix, shape (batch, max_nodes, max_nodes)
+        target_mask: Target node mask, shape (batch, max_nodes)
+        matchings: List of (pred_indices, target_indices) from compute_hungarian_matching
+        config: Loss configuration
+
+    Returns:
+        edge_loss: Binary cross-entropy loss for edges
+        loss_dict: Metrics for logging
+    """
+    if config is None:
+        config = HungarianLossConfig()
+
+    batch_size = pred_edge_logits.shape[0]
+    max_nodes = pred_edge_logits.shape[1]
+    device = pred_edge_logits.device
+
+    # Build matched target adjacency and validity mask
+    matched_target_adj = torch.zeros_like(pred_edge_logits)
+    valid_mask = torch.zeros_like(pred_edge_logits)
+
+    for b, (pred_idx, target_idx) in enumerate(matchings):
+        num_matched = len(pred_idx)
+        if num_matched == 0:
+            continue
+
+        # For each pair of matched nodes, check if they're adjacent in target
+        for i in range(num_matched):
+            for j in range(i + 1, num_matched):
+                ti, tj = int(target_idx[i]), int(target_idx[j])
+                pi, pj = int(pred_idx[i]), int(pred_idx[j])
+
+                # Mark this pair as valid (both nodes matched)
+                valid_mask[b, pi, pj] = 1.0
+                valid_mask[b, pj, pi] = 1.0
+
+                # Copy adjacency from target
+                if target_adj[b, ti, tj] > 0.5:
+                    matched_target_adj[b, pi, pj] = 1.0
+                    matched_target_adj[b, pj, pi] = 1.0
+
+    # Compute loss only on valid pairs
+    num_valid = valid_mask.sum()
+
+    if num_valid > 0:
+        # Get valid predictions and targets
+        valid_pred = pred_edge_logits[valid_mask.bool()]
+        valid_target = matched_target_adj[valid_mask.bool()]
+
+        # BCE with positive weighting for class imbalance
+        num_pos = valid_target.sum()
+        num_neg = num_valid - num_pos
+        if num_pos > 0 and num_neg > 0:
+            pos_weight = torch.tensor([num_neg / num_pos], device=device)
+            pos_weight = torch.clamp(pos_weight, max=config.edge_positive_weight)
+        else:
+            pos_weight = torch.tensor([config.edge_positive_weight], device=device)
+
+        edge_loss = F.binary_cross_entropy_with_logits(
+            valid_pred, valid_target, pos_weight=pos_weight
+        )
+    else:
+        edge_loss = torch.tensor(0.0, device=device)
+
+    # Metrics
+    with torch.no_grad():
+        if num_valid > 0:
+            pred_edges = (torch.sigmoid(pred_edge_logits[valid_mask.bool()]) > 0.5).float()
+            valid_target = matched_target_adj[valid_mask.bool()]
+            edge_acc = (pred_edges == valid_target).float().mean().item()
+
+            # Precision/recall for edges
+            true_pos = ((pred_edges == 1) & (valid_target == 1)).sum().item()
+            pred_pos = (pred_edges == 1).sum().item()
+            actual_pos = (valid_target == 1).sum().item()
+
+            edge_precision = true_pos / max(pred_pos, 1)
+            edge_recall = true_pos / max(actual_pos, 1)
+        else:
+            edge_acc = 0.0
+            edge_precision = 0.0
+            edge_recall = 0.0
+
+    loss_dict = {
+        "edge_loss": edge_loss.detach(),
+        "edge_acc": torch.tensor(edge_acc),
+        "edge_precision": torch.tensor(edge_precision),
+        "edge_recall": torch.tensor(edge_recall),
+        "num_valid_edge_pairs": num_valid.detach(),
+    }
+
+    return edge_loss, loss_dict
+
+
+def transformer_vae_loss(
+    outputs: dict[str, torch.Tensor],
+    targets: dict[str, torch.Tensor],
+    beta: float = 0.1,
+    config: HungarianLossConfig | None = None,
+    free_bits: float = 0.5,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Combined loss for Transformer Graph VAE with Hungarian matching.
+
+    Loss = NodeLoss + EdgeLoss + beta * KL
+
+    Where NodeLoss and EdgeLoss use Hungarian matching for permutation invariance.
+
+    Args:
+        outputs: Model outputs dict containing:
+            - node_features: (batch, max_nodes, 13)
+            - face_type_logits: (batch, max_nodes, num_types)
+            - existence_logits: (batch, max_nodes)
+            - edge_logits: (batch, max_nodes, max_nodes)
+            - mu, logvar: latent distribution params
+        targets: Target dict containing:
+            - node_features: (batch, max_nodes, 13)
+            - face_types: (batch, max_nodes)
+            - node_mask: (batch, max_nodes)
+            - adj_matrix: (batch, max_nodes, max_nodes)
+        beta: KL divergence weight
+        config: Loss configuration
+        free_bits: Minimum KL per dimension
+
+    Returns:
+        total_loss: Combined loss
+        loss_dict: All components for logging
+    """
+    if config is None:
+        config = HungarianLossConfig()
+
+    # Extract tensors
+    pred_features = outputs["node_features"]
+    pred_face_types = outputs["face_type_logits"]
+    pred_existence = outputs["existence_logits"]
+    pred_edges = outputs["edge_logits"]
+    mu = outputs["mu"]
+    logvar = outputs["logvar"]
+
+    target_features = targets["node_features"]
+    target_face_types = targets["face_types"]
+    target_mask = targets["node_mask"]
+    target_adj = targets["adj_matrix"]
+
+    # 1. Compute Hungarian matching
+    matchings = compute_hungarian_matching(
+        pred_features, pred_face_types, pred_existence,
+        target_features, target_face_types, target_mask,
+        config
+    )
+
+    # 2. Node losses with matching
+    node_loss, node_metrics = hungarian_node_loss(
+        pred_features, pred_face_types, pred_existence,
+        target_features, target_face_types, target_mask,
+        matchings, config
+    )
+
+    # 3. Edge loss with matching
+    edge_loss, edge_metrics = hungarian_edge_loss_with_adj(
+        pred_edges, target_adj, target_mask,
+        matchings, config
+    )
+
+    # 4. KL divergence
+    kl_loss = kl_divergence(mu, logvar, free_bits)
+
+    # Combined loss
+    total_loss = (
+        node_loss
+        + config.edge_loss_weight * edge_loss
+        + beta * kl_loss
+    )
+
+    # Aggregate metrics
+    loss_dict = {
+        **node_metrics,
+        **edge_metrics,
+        "node_loss": node_loss.detach(),
+        "kl_loss": kl_loss.detach(),
+        "beta": torch.tensor(beta),
+        "total_loss": total_loss.detach(),
+    }
+
+    return total_loss, loss_dict

@@ -16,6 +16,15 @@ try:
         GraphVAEConfig,
         GraphVAEEncoder,
         GraphVAEDecoder,
+        VariableGraphVAE,
+        VariableGraphVAEConfig,
+        VariableGraphVAEEncoder,
+        VariableGraphVAEDecoder,
+    )
+    from graph_cad.models.transformer_decoder import (
+        TransformerGraphDecoder,
+        TransformerDecoderConfig,
+        TransformerGraphVAE,
     )
     from graph_cad.models.feature_regressor import (
         FeatureRegressor,
@@ -37,11 +46,20 @@ try:
         "FeatureRegressorConfig",
         "load_feature_regressor",
         "save_feature_regressor",
-        # Graph VAE
+        # Graph VAE (fixed topology)
         "GraphVAE",
         "GraphVAEConfig",
         "GraphVAEEncoder",
         "GraphVAEDecoder",
+        # Variable topology VAE (Phase 2)
+        "VariableGraphVAE",
+        "VariableGraphVAEConfig",
+        "VariableGraphVAEEncoder",
+        "VariableGraphVAEDecoder",
+        # Transformer decoder VAE (Phase 3)
+        "TransformerGraphDecoder",
+        "TransformerDecoderConfig",
+        "TransformerGraphVAE",
     ]
 except ImportError:
     # PyTorch/PyG not installed

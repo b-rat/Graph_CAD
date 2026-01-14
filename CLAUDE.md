@@ -52,7 +52,7 @@ black graph_cad tests && ruff check graph_cad tests && mypy graph_cad
 |-------|--------|--------|
 | 1. Fixed Topology PoC | Complete | 80.2% direction accuracy |
 | 2. Variable Topology (MLP Decoder) | Complete | 64% ceiling (architectural limitation) |
-| **3. DETR Transformer Decoder** | **Current** | Target: >80% direction accuracy |
+| **3. DETR Transformer Decoder** | **Implemented** | Awaiting training validation |
 
 **Documentation:**
 - `docs/phase2_mlp_decoder_report.md` — Root cause analysis
@@ -77,47 +77,75 @@ The MLP decoder's fixed-slot output is incompatible with variable topology:
 
 ---
 
-## Phase 3: DETR Transformer Decoder
+## Phase 3: DETR Transformer Decoder (Implemented)
 
 ### Objective
 
 Replace MLP decoder with permutation-invariant transformer to break the 64% ceiling.
 
-### Architecture
+### Implemented Architecture
 
 ```
-z (32D) → Learned Node Queries (max_nodes × hidden)
-                    ↓
-          Cross-Attention to z
-                    ↓
-          Self-Attention Layers
-                    ↓
-    ┌───────────────┼───────────────┐
-    ↓               ↓               ↓
-Node Features   Edge Logits    Existence Mask
- (N × 13D)       (N × N)         (N × 1)
-                    ↓
-          Hungarian Matching to GT
-                    ↓
-           Permutation-Invariant Loss
+z (32D) ─→ [Linear + LayerNorm] ─→ Memory (1 × 256)
+                                        ↓
+Learned Queries (20 × 256) ─→ [Transformer Decoder × 4 layers]
+  + Positional Embeddings              ↓
+                              Node Embeddings (20 × 256)
+                                        ↓
+                    ┌───────────┬───────────┬───────────┐
+                    ↓           ↓           ↓           ↓
+             Node Features  Face Types  Existence   Edge Logits
+              (20 × 13)     (20 × 3)     (20,)      (20 × 20)
+                    ↓           ↓           ↓           ↓
+              ──────────── Hungarian Matching ────────────
+                                        ↓
+                           Permutation-Invariant Loss
 ```
 
-### Key Components
+### Key Components (All Implemented)
 
-1. **Learned Node Queries**: Interchangeable vectors (like DETR object queries)
-2. **Cross-Attention**: Queries attend to latent z
-3. **Self-Attention**: Queries attend to each other for geometric consistency
-4. **Hungarian Matching**: Optimal assignment of predictions to ground truth
-5. **Edge Prediction**: Pairwise attention scores or dedicated edge head
+1. **Learned Node Queries**: 20 interchangeable vectors (like DETR object queries)
+2. **Cross-Attention**: Queries attend to projected latent z
+3. **Self-Attention**: 4-layer transformer decoder with 8 heads
+4. **Hungarian Matching**: scipy.optimize.linear_sum_assignment for optimal GT assignment
+5. **Edge Prediction**: Pairwise MLP on concatenated node embeddings (binary, symmetric)
+6. **Output Heads**: Separate MLPs for node features, face types, existence, edges
 
-### Implementation Steps
+### Implementation Files
 
-1. Implement `TransformerGraphDecoder` in `graph_cad/models/`
-2. Implement Hungarian matching loss in `graph_cad/models/losses.py`
-3. Train VAE with new decoder (keep existing GAT encoder)
-4. Validate parameter correlations improve (target: r > 0.7)
-5. Train latent editor (target: >80% direction accuracy)
-6. End-to-end validation: instruction → edited STEP file
+| File | Description |
+|------|-------------|
+| `graph_cad/models/transformer_decoder.py` | TransformerGraphDecoder, TransformerGraphVAE |
+| `graph_cad/models/losses.py` | Hungarian matching loss functions (added ~400 lines) |
+| `scripts/train_transformer_vae.py` | Training script for Phase 3 |
+| `tests/test_transformer_decoder.py` | 16 unit tests (all passing) |
+
+### Training Command
+
+```bash
+python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
+```
+
+### Default Hyperparameters
+
+| Parameter | Value |
+|-----------|-------|
+| Latent dim | 32 |
+| Decoder hidden dim | 256 |
+| Decoder layers | 4 |
+| Attention heads | 8 |
+| Max nodes | 20 |
+| Learning rate | 1e-4 |
+| Beta (KL weight) | 0.1 (with 30% warmup) |
+
+### Hungarian Matching Cost Weights
+
+| Component | Weight |
+|-----------|--------|
+| Face type (classification) | 2.0× |
+| Node features (L2 distance) | 1.0× |
+| Existence probability | 1.0× |
+| Edge loss | 1.0× |
 
 ### Success Criteria
 
@@ -126,7 +154,8 @@ Node Features   Edge Logits    Existence Mask
 | Direction accuracy | 64% | **>80%** |
 | Parameter correlations | r < 0.3 | **r > 0.7** |
 | Parameter RMSE | ~26% | **<15%** |
-| Topology detection | 100% | 100% |
+| Face type accuracy | ~85% | **>95%** |
+| Edge prediction accuracy | N/A | **>90%** |
 
 ---
 
@@ -187,21 +216,24 @@ Topology: 6-15 faces depending on holes/fillet.
 
 ---
 
-## Key Files for Phase 3
+## Key Files
 
 | File | Purpose |
 |------|---------|
-| `graph_cad/models/graph_vae.py` | Current VAE (encoder to keep, decoder to replace) |
-| `graph_cad/models/losses.py` | Loss functions (add Hungarian matching) |
+| `graph_cad/models/transformer_decoder.py` | **Phase 3** Transformer decoder + VAE wrapper |
+| `graph_cad/models/graph_vae.py` | GAT encoder (used by both Phase 2 & 3) |
+| `graph_cad/models/losses.py` | All loss functions including Hungarian matching |
 | `graph_cad/data/dataset.py` | VariableLBracketDataset |
 | `graph_cad/data/graph_extraction.py` | Graph extraction from STEP |
-| `scripts/train_variable_vae.py` | Training script (modify for new decoder) |
+| `scripts/train_transformer_vae.py` | **Phase 3** training script |
+| `scripts/train_variable_vae.py` | Phase 2 training script (MLP decoder) |
 
 ---
 
-## Current Checkpoints
+## Checkpoints
 
 | Checkpoint | Description |
 |------------|-------------|
-| `outputs/vae_variable_v4/best_model.pt` | VAE v4 with collapse fix (32/32 active dims) |
-| `outputs/vae_aux/best_model.pt` | Fixed topology VAE (80.2% direction accuracy) |
+| `outputs/vae_variable_v4/best_model.pt` | Phase 2 VAE v4 with collapse fix (32/32 active dims) |
+| `outputs/vae_aux/best_model.pt` | Phase 1 fixed topology VAE (80.2% direction accuracy) |
+| `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (pending training) |
