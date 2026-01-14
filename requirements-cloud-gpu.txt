@@ -11,6 +11,7 @@ torch-geometric>=2.4.0
 
 # Scientific Computing
 numpy>=1.24.0
+scipy>=1.10.0  # Hungarian matching for transformer decoder
 tqdm>=4.65.0
 
 # CAD Geometry (required for data generation)
