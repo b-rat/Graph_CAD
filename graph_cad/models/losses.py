@@ -1170,6 +1170,49 @@ def transformer_vae_loss(
     return total_loss, loss_dict
 
 
+# L-bracket parameter ranges for normalization
+# [leg1, leg2, width, thickness] in mm
+PARAM_MINS = torch.tensor([50.0, 50.0, 20.0, 3.0])
+PARAM_MAXS = torch.tensor([200.0, 200.0, 60.0, 12.0])
+PARAM_RANGES = PARAM_MAXS - PARAM_MINS  # [150, 150, 40, 9]
+
+
+def normalize_params(params: torch.Tensor) -> torch.Tensor:
+    """
+    Normalize L-bracket parameters to [0, 1] range.
+
+    This ensures all parameters contribute equally to the aux loss,
+    regardless of their physical scale.
+
+    Args:
+        params: Raw parameters, shape (batch, 4) in mm
+                [leg1, leg2, width, thickness]
+
+    Returns:
+        Normalized parameters in [0, 1] range
+    """
+    device = params.device
+    mins = PARAM_MINS.to(device)
+    ranges = PARAM_RANGES.to(device)
+    return (params - mins) / ranges
+
+
+def denormalize_params(params_norm: torch.Tensor) -> torch.Tensor:
+    """
+    Convert normalized parameters back to physical units (mm).
+
+    Args:
+        params_norm: Normalized parameters in [0, 1] range
+
+    Returns:
+        Parameters in mm
+    """
+    device = params_norm.device
+    mins = PARAM_MINS.to(device)
+    ranges = PARAM_RANGES.to(device)
+    return params_norm * ranges + mins
+
+
 def transformer_vae_loss_with_aux(
     outputs: dict[str, torch.Tensor],
     targets: dict[str, torch.Tensor],
@@ -1178,6 +1221,7 @@ def transformer_vae_loss_with_aux(
     aux_weight: float = 1.0,
     config: HungarianLossConfig | None = None,
     free_bits: float = 0.5,
+    normalize_params_for_loss: bool = True,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
     Transformer VAE loss with auxiliary parameter prediction.
@@ -1201,11 +1245,13 @@ def transformer_vae_loss_with_aux(
             - face_types: (batch, max_nodes)
             - node_mask: (batch, max_nodes)
             - adj_matrix: (batch, max_nodes, max_nodes)
-        param_target: Ground truth normalized parameters, shape (batch, num_params)
+        param_target: Ground truth parameters, shape (batch, num_params)
         beta: KL divergence weight
         aux_weight: Auxiliary parameter loss weight
         config: Loss configuration
         free_bits: Minimum KL per dimension
+        normalize_params_for_loss: If True, normalize parameters to [0,1] before
+            computing MSE so all parameters contribute equally regardless of scale.
 
     Returns:
         total_loss: Combined loss
@@ -1218,7 +1264,18 @@ def transformer_vae_loss_with_aux(
 
     # Auxiliary parameter loss
     if "param_pred" in outputs and aux_weight > 0:
-        aux_loss = F.mse_loss(outputs["param_pred"], param_target)
+        param_pred = outputs["param_pred"]
+
+        if normalize_params_for_loss:
+            # Normalize both predictions and targets to [0, 1]
+            # This ensures equal contribution from all parameters
+            param_pred_norm = normalize_params(param_pred)
+            param_target_norm = normalize_params(param_target)
+            aux_loss = F.mse_loss(param_pred_norm, param_target_norm)
+        else:
+            # Raw MSE (biased toward larger parameters)
+            aux_loss = F.mse_loss(param_pred, param_target)
+
         total_loss = base_loss + aux_weight * aux_loss
         loss_dict["aux_param_loss"] = aux_loss.detach()
         loss_dict["aux_weight"] = torch.tensor(aux_weight)
