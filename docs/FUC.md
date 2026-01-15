@@ -20,15 +20,17 @@ git config user.name "b-rat"
 git pull
 git lfs pull
 
-
-apt-get update && apt-get install -y git-lfs && git lfs install && \
 pip install -r requirements-cloud-gpu.txt && pip install -e . && pip install hf_transfer && \
 echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc && \
 source ~/.bashrc && \
-apt update && apt install tmux -y && \
 apt-get update && apt-get install -y libxrender1 libxext6 && \
+apt update && apt install tmux -y && \
+tmux set -g history-limit 50000 && \
+tmux set -g mouse on && \
+
 apt install jq
 
+apt-get update && apt-get install -y git-lfs && git lfs install
 
 jq . filename.json # to view file
 jq 'length' filename.json # count items in the file
@@ -583,4 +585,8 @@ python scripts/infer_latent_editor.py \
     --output-dir outputs/inference_test \
     --seed $RANDOM \
     --verbose
+```
+
+```bash
+python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
 ```
