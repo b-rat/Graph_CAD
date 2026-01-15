@@ -52,7 +52,7 @@ black graph_cad tests && ruff check graph_cad tests && mypy graph_cad
 |-------|--------|--------|
 | 1. Fixed Topology PoC | Complete | 80.2% direction accuracy |
 | 2. Variable Topology (MLP Decoder) | Complete | 64% ceiling (architectural limitation) |
-| **3. DETR Transformer Decoder** | **Implemented** | Awaiting training validation |
+| **3. DETR Transformer Decoder** | **In Progress** | 100% face/edge accuracy, aux head added |
 
 **Documentation:**
 - `docs/phase2_mlp_decoder_report.md` — Root cause analysis
@@ -77,11 +77,38 @@ The MLP decoder's fixed-slot output is incompatible with variable topology:
 
 ---
 
-## Phase 3: DETR Transformer Decoder (Implemented)
+## Phase 3: DETR Transformer Decoder (In Progress)
 
 ### Objective
 
 Replace MLP decoder with permutation-invariant transformer to break the 64% ceiling.
+
+### Current Status
+
+**Initial Training Results (without aux head):**
+- Face type accuracy: 100%
+- Edge accuracy: 100%
+- Parameter correlations:
+  - leg1: r = 0.988 ✓
+  - leg2: r = 0.983 ✓
+  - width: r = 0.063 ✗
+  - thickness: r = 0.107 ✗
+
+**Issue Identified: Geometric Dominance**
+
+The reconstruction loss is dominated by leg lengths (they affect many faces' areas, centroids, edges). Width and thickness have smaller geometric footprints, so the encoder ignores them — it can achieve low reconstruction loss without encoding them.
+
+**Solution: Auxiliary Parameter Prediction Head**
+
+Added `param_head` to force the latent space to encode all parameters:
+
+```
+z (latent) → param_head (MLP) → predicted [leg1, leg2, width, thickness]
+                                        ↓
+                                   MSE loss vs ground truth
+```
+
+The aux head provides direct supervision: if width/thickness aren't encoded in z, the param_head can't predict them and loss stays high. This forces the encoder to preserve all parameter information.
 
 ### Implemented Architecture
 
@@ -120,10 +147,17 @@ Learned Queries (20 × 256) ─→ [Transformer Decoder × 4 layers]
 | `scripts/train_transformer_vae.py` | Training script for Phase 3 |
 | `tests/test_transformer_decoder.py` | 16 unit tests (all passing) |
 
-### Training Command
+### Training Commands
 
 ```bash
+# Basic training (without aux head)
 python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
+
+# Training with auxiliary parameter head (recommended)
+python scripts/train_transformer_vae.py --epochs 100 --train-size 5000 --aux-weight 1.0
+
+# Test parameter correlations after training
+python scripts/test_tvae.py
 ```
 
 ### Default Hyperparameters
@@ -137,6 +171,7 @@ python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
 | Max nodes | 20 |
 | Learning rate | 1e-4 |
 | Beta (KL weight) | 0.1 (with 30% warmup) |
+| Aux weight | 1.0 (when enabled) |
 
 ### Hungarian Matching Cost Weights
 
@@ -149,13 +184,15 @@ python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
 
 ### Success Criteria
 
-| Metric | Phase 2 (MLP) | Phase 3 Target |
-|--------|---------------|----------------|
-| Direction accuracy | 64% | **>80%** |
-| Parameter correlations | r < 0.3 | **r > 0.7** |
-| Parameter RMSE | ~26% | **<15%** |
-| Face type accuracy | ~85% | **>95%** |
-| Edge prediction accuracy | N/A | **>90%** |
+| Metric | Phase 2 (MLP) | Phase 3 Current | Phase 3 Target |
+|--------|---------------|-----------------|----------------|
+| Direction accuracy | 64% | Pending | **>80%** |
+| leg1/leg2 correlation | r < 0.3 | r > 0.98 ✓ | r > 0.7 |
+| width/thickness correlation | r < 0.3 | r < 0.11 ✗ | **r > 0.7** |
+| Face type accuracy | ~85% | 100% ✓ | >95% |
+| Edge prediction accuracy | N/A | 100% ✓ | >90% |
+
+**Next Step:** Train with `--aux-weight 1.0` to force encoding of width/thickness.
 
 ---
 
@@ -220,12 +257,13 @@ Topology: 6-15 faces depending on holes/fillet.
 
 | File | Purpose |
 |------|---------|
-| `graph_cad/models/transformer_decoder.py` | **Phase 3** Transformer decoder + VAE wrapper |
+| `graph_cad/models/transformer_decoder.py` | **Phase 3** Transformer decoder + VAE wrapper + param_head |
 | `graph_cad/models/graph_vae.py` | GAT encoder (used by both Phase 2 & 3) |
-| `graph_cad/models/losses.py` | All loss functions including Hungarian matching |
+| `graph_cad/models/losses.py` | All loss functions including Hungarian matching + aux loss |
 | `graph_cad/data/dataset.py` | VariableLBracketDataset |
 | `graph_cad/data/graph_extraction.py` | Graph extraction from STEP |
-| `scripts/train_transformer_vae.py` | **Phase 3** training script |
+| `scripts/train_transformer_vae.py` | **Phase 3** training script (supports --aux-weight) |
+| `scripts/test_tvae.py` | Test parameter correlations in latent space |
 | `scripts/train_variable_vae.py` | Phase 2 training script (MLP decoder) |
 
 ---
@@ -236,4 +274,6 @@ Topology: 6-15 faces depending on holes/fillet.
 |------------|-------------|
 | `outputs/vae_variable_v4/best_model.pt` | Phase 2 VAE v4 with collapse fix (32/32 active dims) |
 | `outputs/vae_aux/best_model.pt` | Phase 1 fixed topology VAE (80.2% direction accuracy) |
-| `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (pending training) |
+| `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (without aux head, leg1/leg2 only) |
+
+**Note:** Retrain with `--aux-weight 1.0` to get checkpoint with all 4 parameters encoded.
