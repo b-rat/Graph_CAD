@@ -37,6 +37,7 @@ from graph_cad.models.transformer_decoder import (
 from graph_cad.models.losses import (
     HungarianLossConfig,
     transformer_vae_loss,
+    transformer_vae_loss_with_aux,
     kl_divergence,
 )
 
@@ -148,6 +149,8 @@ def train_epoch(
     max_nodes: int,
     max_edges: int,
     free_bits: float = 0.5,
+    aux_weight: float = 0.0,
+    num_params: int = 4,
 ) -> dict[str, float]:
     """Train for one epoch."""
     model.train()
@@ -187,9 +190,18 @@ def train_epoch(
         }
 
         # Compute loss with Hungarian matching
-        loss, metrics = transformer_vae_loss(
-            outputs, targets, beta, loss_config, free_bits
-        )
+        if aux_weight > 0 and hasattr(batch, 'y'):
+            # Get parameter targets (may be flattened by PyG DataLoader)
+            y = batch.y
+            if y.dim() == 1:
+                y = y.view(batch_size, num_params)
+            loss, metrics = transformer_vae_loss_with_aux(
+                outputs, targets, y, beta, aux_weight, loss_config, free_bits
+            )
+        else:
+            loss, metrics = transformer_vae_loss(
+                outputs, targets, beta, loss_config, free_bits
+            )
 
         # Backward pass
         optimizer.zero_grad()
@@ -223,6 +235,8 @@ def evaluate(
     max_nodes: int,
     max_edges: int,
     free_bits: float = 0.5,
+    aux_weight: float = 0.0,
+    num_params: int = 4,
 ) -> dict[str, float]:
     """Evaluate on validation set."""
     model.eval()
@@ -257,9 +271,17 @@ def evaluate(
             "adj_matrix": adj_matrices,
         }
 
-        loss, metrics = transformer_vae_loss(
-            outputs, targets, beta, loss_config, free_bits
-        )
+        if aux_weight > 0 and hasattr(batch, 'y'):
+            y = batch.y
+            if y.dim() == 1:
+                y = y.view(batch_size, num_params)
+            loss, metrics = transformer_vae_loss_with_aux(
+                outputs, targets, y, beta, aux_weight, loss_config, free_bits
+            )
+        else:
+            loss, metrics = transformer_vae_loss(
+                outputs, targets, beta, loss_config, free_bits
+            )
 
         total_loss += loss.item()
         for key, value in metrics.items():
@@ -332,6 +354,8 @@ def save_checkpoint(
     encoder_config: dict,
     decoder_config: dict,
     path: str,
+    use_param_head: bool = False,
+    num_params: int = 4,
 ):
     """Save model checkpoint."""
     torch.save({
@@ -341,6 +365,8 @@ def save_checkpoint(
         "metrics": metrics,
         "encoder_config": encoder_config,
         "decoder_config": decoder_config,
+        "use_param_head": use_param_head,
+        "num_params": num_params,
     }, path)
 
 
@@ -390,6 +416,12 @@ def main():
                         help="Face type loss weight")
     parser.add_argument("--edge-weight", type=float, default=1.0,
                         help="Edge loss weight")
+
+    # Auxiliary parameter prediction
+    parser.add_argument("--aux-weight", type=float, default=0.0,
+                        help="Auxiliary parameter prediction loss weight (0=disabled)")
+    parser.add_argument("--num-params", type=int, default=4,
+                        help="Number of L-bracket parameters to predict")
 
     # Output arguments
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/vae_transformer"),
@@ -472,7 +504,12 @@ def main():
 
     # Create model
     encoder = VariableGraphVAEEncoder(encoder_config)
-    model = TransformerGraphVAE(encoder, decoder_config).to(device)
+    use_param_head = args.aux_weight > 0
+    model = TransformerGraphVAE(
+        encoder, decoder_config,
+        use_param_head=use_param_head,
+        num_params=args.num_params
+    ).to(device)
 
     encoder_params = sum(p.numel() for p in encoder.parameters() if p.requires_grad)
     decoder_params = sum(p.numel() for p in model.decoder.parameters() if p.requires_grad)
@@ -502,6 +539,8 @@ def main():
     print(f"  Target beta: {args.target_beta}, Free bits: {args.free_bits}")
     print(f"  Beta warmup: {beta_warmup_epochs} epochs")
     print(f"  Learning rate: {args.lr}")
+    if args.aux_weight > 0:
+        print(f"  Aux weight: {args.aux_weight}, Num params: {args.num_params}")
     print("-" * 140)
 
     best_val_loss = float("inf")
@@ -522,13 +561,15 @@ def main():
         # Train
         train_metrics = train_epoch(
             model, train_loader, optimizer, beta, device,
-            loss_config, args.max_nodes, args.max_edges, args.free_bits
+            loss_config, args.max_nodes, args.max_edges, args.free_bits,
+            args.aux_weight, args.num_params
         )
 
         # Validate
         val_metrics = evaluate(
             model, val_loader, beta, device,
-            loss_config, args.max_nodes, args.max_edges, args.free_bits
+            loss_config, args.max_nodes, args.max_edges, args.free_bits,
+            args.aux_weight, args.num_params
         )
 
         # Compute latent metrics
@@ -552,7 +593,7 @@ def main():
         elif mean_std < 0.3:
             collapse_warning = " ⚠️ LOW_STD"
 
-        print(
+        log_str = (
             f"Epoch {epoch:3d}/{args.epochs} | "
             f"β={beta:.3f} | "
             f"Train: {train_metrics['loss']:.4f} | "
@@ -561,9 +602,12 @@ def main():
             f"Edge: {val_metrics.get('edge_loss', 0):.4f} | "
             f"KL: {val_metrics['kl_loss']:.4f} | "
             f"FaceAcc: {val_metrics.get('face_type_acc', 0):.1%} | "
-            f"EdgeAcc: {val_metrics.get('edge_acc', 0):.1%} | "
-            f"Active: {active_dims}/{args.latent_dim}{collapse_warning}"
+            f"EdgeAcc: {val_metrics.get('edge_acc', 0):.1%}"
         )
+        if args.aux_weight > 0:
+            log_str += f" | Aux: {val_metrics.get('aux_param_loss', 0):.4f}"
+        log_str += f" | Active: {active_dims}/{args.latent_dim}{collapse_warning}"
+        print(log_str)
 
         # Save best
         if val_metrics["loss"] < best_val_loss:
@@ -571,7 +615,8 @@ def main():
             save_checkpoint(
                 model, optimizer, epoch, val_metrics,
                 asdict(encoder_config), asdict(decoder_config),
-                str(args.output_dir / "best_model.pt")
+                str(args.output_dir / "best_model.pt"),
+                use_param_head, args.num_params
             )
 
         # Periodic save
@@ -579,7 +624,8 @@ def main():
             save_checkpoint(
                 model, optimizer, epoch, val_metrics,
                 asdict(encoder_config), asdict(decoder_config),
-                str(args.output_dir / f"checkpoint_epoch_{epoch}.pt")
+                str(args.output_dir / f"checkpoint_epoch_{epoch}.pt"),
+                use_param_head, args.num_params
             )
 
     print("-" * 140)
@@ -589,7 +635,8 @@ def main():
     print("\nEvaluating on test set...")
     test_metrics = evaluate(
         model, test_loader, args.target_beta, device,
-        loss_config, args.max_nodes, args.max_edges, args.free_bits
+        loss_config, args.max_nodes, args.max_edges, args.free_bits,
+        args.aux_weight, args.num_params
     )
 
     print(f"\nTest Results:")

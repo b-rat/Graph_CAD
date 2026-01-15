@@ -235,6 +235,8 @@ class TransformerGraphVAE(nn.Module):
         self,
         encoder: nn.Module,
         decoder_config: TransformerDecoderConfig | None = None,
+        use_param_head: bool = False,
+        num_params: int = 4,
     ):
         super().__init__()
         self.encoder = encoder
@@ -243,6 +245,17 @@ class TransformerGraphVAE(nn.Module):
         # Store configs for reference
         self.encoder_config = getattr(encoder, 'config', None)
         self.decoder_config = self.decoder.config
+
+        # Auxiliary parameter prediction head
+        # Forces latent space to encode all L-bracket parameters
+        self.use_param_head = use_param_head
+        self.num_params = num_params
+        if use_param_head:
+            self.param_head = nn.Sequential(
+                nn.Linear(self.decoder_config.latent_dim, 64),
+                nn.ReLU(),
+                nn.Linear(64, num_params),
+            )
 
     def reparameterize(
         self, mu: torch.Tensor, logvar: torch.Tensor
@@ -300,12 +313,18 @@ class TransformerGraphVAE(nn.Module):
         z = self.reparameterize(mu, logvar)
         decoder_output = self.decode(z)
 
-        return {
+        result = {
             **decoder_output,
             "mu": mu,
             "logvar": logvar,
             "z": z,
         }
+
+        # Auxiliary parameter prediction from latent
+        if self.use_param_head:
+            result["param_pred"] = self.param_head(mu)
+
+        return result
 
     def sample(
         self, num_samples: int, device: str = "cpu"

@@ -1168,3 +1168,63 @@ def transformer_vae_loss(
     }
 
     return total_loss, loss_dict
+
+
+def transformer_vae_loss_with_aux(
+    outputs: dict[str, torch.Tensor],
+    targets: dict[str, torch.Tensor],
+    param_target: torch.Tensor,
+    beta: float = 0.1,
+    aux_weight: float = 1.0,
+    config: HungarianLossConfig | None = None,
+    free_bits: float = 0.5,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Transformer VAE loss with auxiliary parameter prediction.
+
+    Loss = NodeLoss + EdgeLoss + beta * KL + aux_weight * ParamMSE
+
+    The auxiliary loss forces the latent space to encode all L-bracket
+    parameters (leg1, leg2, width, thickness), preventing geometric dominance
+    where only large parameters (leg lengths) are encoded.
+
+    Args:
+        outputs: Model outputs dict containing:
+            - node_features: (batch, max_nodes, 13)
+            - face_type_logits: (batch, max_nodes, num_types)
+            - existence_logits: (batch, max_nodes)
+            - edge_logits: (batch, max_nodes, max_nodes)
+            - mu, logvar: latent distribution params
+            - param_pred: (batch, num_params) if aux_weight > 0
+        targets: Target dict containing:
+            - node_features: (batch, max_nodes, 13)
+            - face_types: (batch, max_nodes)
+            - node_mask: (batch, max_nodes)
+            - adj_matrix: (batch, max_nodes, max_nodes)
+        param_target: Ground truth normalized parameters, shape (batch, num_params)
+        beta: KL divergence weight
+        aux_weight: Auxiliary parameter loss weight
+        config: Loss configuration
+        free_bits: Minimum KL per dimension
+
+    Returns:
+        total_loss: Combined loss
+        loss_dict: All components for logging
+    """
+    # Base transformer VAE loss
+    base_loss, loss_dict = transformer_vae_loss(
+        outputs, targets, beta, config, free_bits
+    )
+
+    # Auxiliary parameter loss
+    if "param_pred" in outputs and aux_weight > 0:
+        aux_loss = F.mse_loss(outputs["param_pred"], param_target)
+        total_loss = base_loss + aux_weight * aux_loss
+        loss_dict["aux_param_loss"] = aux_loss.detach()
+        loss_dict["aux_weight"] = torch.tensor(aux_weight)
+    else:
+        total_loss = base_loss
+
+    loss_dict["total_loss"] = total_loss.detach()
+
+    return total_loss, loss_dict

@@ -17,10 +17,18 @@ from graph_cad.models.transformer_decoder import TransformerDecoderConfig, Trans
 print("Loading model...")
 ckpt = torch.load("outputs/vae_transformer/best_model.pt", map_location="cpu")
 encoder = VariableGraphVAEEncoder(VariableGraphVAEConfig(**ckpt["encoder_config"]))
-model = TransformerGraphVAE(encoder, TransformerDecoderConfig(**ckpt["decoder_config"]))
+# Load param_head info if available (new models with aux loss)
+use_param_head = ckpt.get("use_param_head", False)
+num_params = ckpt.get("num_params", 4)
+model = TransformerGraphVAE(
+    encoder, TransformerDecoderConfig(**ckpt["decoder_config"]),
+    use_param_head=use_param_head, num_params=num_params
+)
 model.load_state_dict(ckpt["model_state_dict"])
 model.eval()
 print(f"Loaded checkpoint from epoch {ckpt['epoch']}")
+if use_param_head:
+    print(f"Model has param_head for {num_params} parameters")
 
 # Get test data
 print("Generating test data...")
