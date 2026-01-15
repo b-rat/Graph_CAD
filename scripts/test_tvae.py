@@ -1,32 +1,77 @@
+"""
+Test Transformer VAE latent space parameter correlations.
+
+Checks if the learned latent space encodes L-bracket parameters
+(leg1, leg2, width, thickness) by computing correlations between
+latent dimensions and ground truth parameters.
+"""
+
 import torch
 import numpy as np
 from scipy.stats import pearsonr
 from graph_cad.data.dataset import create_variable_data_loaders
 from graph_cad.models.graph_vae import VariableGraphVAEConfig, VariableGraphVAEEncoder
 from graph_cad.models.transformer_decoder import TransformerDecoderConfig, TransformerGraphVAE
+
 # Load model
+print("Loading model...")
 ckpt = torch.load("outputs/vae_transformer/best_model.pt", map_location="cpu")
 encoder = VariableGraphVAEEncoder(VariableGraphVAEConfig(**ckpt["encoder_config"]))
 model = TransformerGraphVAE(encoder, TransformerDecoderConfig(**ckpt["decoder_config"]))
 model.load_state_dict(ckpt["model_state_dict"])
 model.eval()
+print(f"Loaded checkpoint from epoch {ckpt['epoch']}")
+
 # Get test data
-_, _, test_loader = create_variable_data_loaders(train_size=100, val_size=100, test_size=500, batch_size=32)
+print("Generating test data...")
+_, _, test_loader = create_variable_data_loaders(
+    train_size=100, val_size=100, test_size=500, batch_size=32
+)
+
 # Collect latents and parameters
 all_z, all_params = [], []
 with torch.no_grad():
     for batch in test_loader:
-        mu, _ = model.encode(batch.x, batch.face_types, batch.edge_index, batch.edge_attr, batch.batch, batch.node_mask)
+        mu, _ = model.encode(
+            batch.x, batch.face_types, batch.edge_index, batch.edge_attr,
+            batch.batch, batch.node_mask
+        )
         all_z.append(mu)
-        all_params.append(batch.y)
+        # batch.y may be flattened by PyG DataLoader, reshape to (batch_size, 4)
+        y = batch.y
+        if y.dim() == 1:
+            y = y.view(-1, 4)
+        all_params.append(y)
+
 z = torch.cat(all_z).numpy()
 params = torch.cat(all_params).numpy()
+
+print(f"Collected {len(z)} samples")
+print(f"Latent shape: {z.shape}, Params shape: {params.shape}")
+
 # Correlations
 param_names = ["leg1", "leg2", "width", "thickness"]
+print("\n" + "=" * 50)
 print("Parameter correlations with latent dimensions:")
-print("-" * 50)
+print("=" * 50)
+
+max_correlations = []
 for i, name in enumerate(param_names):
     correlations = [abs(pearsonr(z[:, j], params[:, i])[0]) for j in range(z.shape[1])]
     max_corr = max(correlations)
     max_dim = correlations.index(max_corr)
-    print(f"{name:12s}: r={max_corr:.3f} (dim {max_dim})")
+    max_correlations.append(max_corr)
+    print(f"{name:12s}: r = {max_corr:.3f} (best dim: {max_dim})")
+
+print("=" * 50)
+
+# Overall assessment
+avg_corr = np.mean(max_correlations)
+print(f"\nAverage max correlation: {avg_corr:.3f}")
+
+if avg_corr > 0.7:
+    print("SUCCESS: Latent space encodes parameters well!")
+elif avg_corr > 0.5:
+    print("PARTIAL: Some parameter encoding, room for improvement")
+else:
+    print("POOR: Latent space not encoding parameters effectively")
