@@ -151,6 +151,7 @@ def train_epoch(
     free_bits: float = 0.5,
     aux_weight: float = 0.0,
     num_params: int = 4,
+    aux_loss_type: str = "correlation",
 ) -> dict[str, float]:
     """Train for one epoch."""
     model.train()
@@ -196,7 +197,8 @@ def train_epoch(
             if y.dim() == 1:
                 y = y.view(batch_size, num_params)
             loss, metrics = transformer_vae_loss_with_aux(
-                outputs, targets, y, beta, aux_weight, loss_config, free_bits
+                outputs, targets, y, beta, aux_weight, loss_config, free_bits,
+                aux_loss_type
             )
         else:
             loss, metrics = transformer_vae_loss(
@@ -237,6 +239,7 @@ def evaluate(
     free_bits: float = 0.5,
     aux_weight: float = 0.0,
     num_params: int = 4,
+    aux_loss_type: str = "correlation",
 ) -> dict[str, float]:
     """Evaluate on validation set."""
     model.eval()
@@ -276,7 +279,8 @@ def evaluate(
             if y.dim() == 1:
                 y = y.view(batch_size, num_params)
             loss, metrics = transformer_vae_loss_with_aux(
-                outputs, targets, y, beta, aux_weight, loss_config, free_bits
+                outputs, targets, y, beta, aux_weight, loss_config, free_bits,
+                aux_loss_type
             )
         else:
             loss, metrics = transformer_vae_loss(
@@ -422,6 +426,9 @@ def main():
                         help="Auxiliary parameter prediction loss weight (0=disabled)")
     parser.add_argument("--num-params", type=int, default=4,
                         help="Number of L-bracket parameters to predict")
+    parser.add_argument("--aux-loss-type", type=str, default="correlation",
+                        choices=["correlation", "mse", "mse_normalized"],
+                        help="Auxiliary loss type (default: correlation)")
 
     # Output arguments
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/vae_transformer"),
@@ -540,7 +547,7 @@ def main():
     print(f"  Beta warmup: {beta_warmup_epochs} epochs")
     print(f"  Learning rate: {args.lr}")
     if args.aux_weight > 0:
-        print(f"  Aux weight: {args.aux_weight}, Num params: {args.num_params}")
+        print(f"  Aux weight: {args.aux_weight}, Num params: {args.num_params}, Loss type: {args.aux_loss_type}")
     print("-" * 140)
 
     best_val_loss = float("inf")
@@ -562,14 +569,14 @@ def main():
         train_metrics = train_epoch(
             model, train_loader, optimizer, beta, device,
             loss_config, args.max_nodes, args.max_edges, args.free_bits,
-            args.aux_weight, args.num_params
+            args.aux_weight, args.num_params, args.aux_loss_type
         )
 
         # Validate
         val_metrics = evaluate(
             model, val_loader, beta, device,
             loss_config, args.max_nodes, args.max_edges, args.free_bits,
-            args.aux_weight, args.num_params
+            args.aux_weight, args.num_params, args.aux_loss_type
         )
 
         # Compute latent metrics
@@ -636,7 +643,7 @@ def main():
     test_metrics = evaluate(
         model, test_loader, args.target_beta, device,
         loss_config, args.max_nodes, args.max_edges, args.free_bits,
-        args.aux_weight, args.num_params
+        args.aux_weight, args.num_params, args.aux_loss_type
     )
 
     print(f"\nTest Results:")

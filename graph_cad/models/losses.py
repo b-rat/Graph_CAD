@@ -1177,6 +1177,42 @@ PARAM_MAXS = torch.tensor([200.0, 200.0, 60.0, 12.0])
 PARAM_RANGES = PARAM_MAXS - PARAM_MINS  # [150, 150, 40, 9]
 
 
+def correlation_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """
+    Compute negative correlation loss for parameter prediction.
+
+    Minimizing this loss maximizes the correlation between predictions
+    and targets. Unlike MSE, this is scale/offset invariant and directly
+    optimizes the metric we care about (correlation).
+
+    Args:
+        pred: Predicted parameters, shape (batch, num_params)
+        target: Target parameters, shape (batch, num_params)
+
+    Returns:
+        Negative mean correlation (scalar). Lower = better correlation.
+        Range: [-1, 1] where -1 means perfect correlation.
+    """
+    # Center the predictions and targets (subtract mean)
+    pred_centered = pred - pred.mean(dim=0, keepdim=True)
+    target_centered = target - target.mean(dim=0, keepdim=True)
+
+    # Compute correlation per parameter using covariance formula
+    # corr = cov(pred, target) / (std(pred) * std(target))
+    # cov = mean((pred - mean_pred) * (target - mean_target))
+    covariance = (pred_centered * target_centered).mean(dim=0)
+
+    # Use unbiased=False for consistency with covariance calculation
+    pred_std = pred_centered.std(dim=0, unbiased=False) + 1e-8
+    target_std = target_centered.std(dim=0, unbiased=False) + 1e-8
+
+    # Correlation per parameter
+    correlations = covariance / (pred_std * target_std)
+
+    # Return negative mean correlation (we minimize loss, so negative = maximize correlation)
+    return -correlations.mean()
+
+
 def normalize_params(params: torch.Tensor) -> torch.Tensor:
     """
     Normalize L-bracket parameters to [0, 1] range.
@@ -1221,12 +1257,12 @@ def transformer_vae_loss_with_aux(
     aux_weight: float = 1.0,
     config: HungarianLossConfig | None = None,
     free_bits: float = 0.5,
-    normalize_params_for_loss: bool = True,
+    aux_loss_type: str = "correlation",
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
     Transformer VAE loss with auxiliary parameter prediction.
 
-    Loss = NodeLoss + EdgeLoss + beta * KL + aux_weight * ParamMSE
+    Loss = NodeLoss + EdgeLoss + beta * KL + aux_weight * AuxLoss
 
     The auxiliary loss forces the latent space to encode all L-bracket
     parameters (leg1, leg2, width, thickness), preventing geometric dominance
@@ -1250,8 +1286,10 @@ def transformer_vae_loss_with_aux(
         aux_weight: Auxiliary parameter loss weight
         config: Loss configuration
         free_bits: Minimum KL per dimension
-        normalize_params_for_loss: If True, normalize parameters to [0,1] before
-            computing MSE so all parameters contribute equally regardless of scale.
+        aux_loss_type: Type of auxiliary loss:
+            - "correlation": Negative correlation loss (scale/offset invariant)
+            - "mse": Raw MSE loss
+            - "mse_normalized": MSE on [0,1] normalized parameters
 
     Returns:
         total_loss: Combined loss
@@ -1266,13 +1304,15 @@ def transformer_vae_loss_with_aux(
     if "param_pred" in outputs and aux_weight > 0:
         param_pred = outputs["param_pred"]
 
-        if normalize_params_for_loss:
+        if aux_loss_type == "correlation":
+            # Correlation loss: scale/offset invariant, directly optimizes correlation
+            aux_loss = correlation_loss(param_pred, param_target)
+        elif aux_loss_type == "mse_normalized":
             # Normalize both predictions and targets to [0, 1]
-            # This ensures equal contribution from all parameters
             param_pred_norm = normalize_params(param_pred)
             param_target_norm = normalize_params(param_target)
             aux_loss = F.mse_loss(param_pred_norm, param_target_norm)
-        else:
+        else:  # "mse"
             # Raw MSE (biased toward larger parameters)
             aux_loss = F.mse_loss(param_pred, param_target)
 
