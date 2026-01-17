@@ -71,8 +71,8 @@ def main():
     parser.add_argument(
         "--latent-dim",
         type=int,
-        default=16,
-        help="Latent dimension (must match VAE)",
+        default=32,
+        help="Latent dimension (must match VAE; 32 for Transformer VAE, 16 for older VAEs)",
     )
     parser.add_argument(
         "--lora-r",
@@ -242,14 +242,24 @@ def main():
     print(f"\nLoading data from {args.data_dir}...")
     data_dir = Path(args.data_dir)
 
-    # Check if data is paired (for contrastive learning)
+    # Check if data is paired (for contrastive learning) and get latent dim from metadata
     metadata_path = data_dir / "metadata.json"
     is_paired = False
+    data_latent_dim = None
     if metadata_path.exists():
-        import json
         with open(metadata_path) as f:
             metadata = json.load(f)
             is_paired = metadata.get("paired", False)
+            data_latent_dim = metadata.get("latent_dim")
+
+    # Auto-detect latent dim from data metadata if not explicitly set and metadata exists
+    if data_latent_dim is not None and args.latent_dim != data_latent_dim:
+        print(f"  Note: Data was generated with latent_dim={data_latent_dim}")
+        print(f"  Using --latent-dim={args.latent_dim} (override with --latent-dim if needed)")
+        # Use the data's latent dim if user didn't explicitly change from default
+        if args.latent_dim == 32:  # Default value
+            args.latent_dim = data_latent_dim
+            print(f"  Auto-detected latent_dim={args.latent_dim} from data metadata")
 
     if args.contrastive_weight > 0 and not is_paired:
         print("Warning: --contrastive-weight > 0 but data is not paired.")
@@ -266,6 +276,17 @@ def main():
         train_dataset = LatentEditDataset(data_dir / "train.json")
         val_dataset = LatentEditDataset(data_dir / "val.json")
         collate_fn = collate_edit_batch
+
+    # Print data info from metadata
+    if metadata_path.exists():
+        with open(metadata_path) as f:
+            metadata = json.load(f)
+        if "parameters" in metadata:
+            print(f"  Parameters: {metadata['parameters']}")
+        if "edit_types" in metadata:
+            print(f"  Edit types: {metadata['edit_types']}")
+        if "variable_topology" in metadata:
+            print(f"  Variable topology: {metadata['variable_topology']}")
 
     print(f"  Train samples: {len(train_dataset)}")
     print(f"  Val samples: {len(val_dataset)}")
