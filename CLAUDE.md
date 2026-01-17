@@ -85,30 +85,63 @@ Replace MLP decoder with permutation-invariant transformer to break the 64% ceil
 
 ### Current Status
 
-**Initial Training Results (without aux head):**
+**Reconstruction works perfectly:**
 - Face type accuracy: 100%
 - Edge accuracy: 100%
-- Parameter correlations:
-  - leg1: r = 0.988 ✓
-  - leg2: r = 0.983 ✓
-  - width: r = 0.063 ✗
-  - thickness: r = 0.107 ✗
+- Leg parameters encoded: r > 0.98
 
-**Issue Identified: Geometric Dominance**
+**Unsolved Problem: Width/Thickness Not Encoded**
 
-The reconstruction loss is dominated by leg lengths (they affect many faces' areas, centroids, edges). Width and thickness have smaller geometric footprints, so the encoder ignores them — it can achieve low reconstruction loss without encoding them.
+| Parameter | Correlation | Status |
+|-----------|-------------|--------|
+| leg1 | r = 0.992 | ✓ Excellent |
+| leg2 | r = 0.989 | ✓ Excellent |
+| width | r = 0.155 | ✗ Poor |
+| thickness | r = 0.102 | ✗ Poor |
 
-**Solution: Auxiliary Parameter Prediction Head**
+**Root Cause: Geometric Dominance**
 
-Added `param_head` to force the latent space to encode all parameters:
+Reconstruction loss is dominated by leg lengths (they affect many faces' areas, centroids, edges). Width and thickness have smaller geometric footprints, so the encoder ignores them — it achieves low reconstruction loss without encoding them.
 
+### Attempted Solutions
+
+**1. Auxiliary Parameter Head (param_head)**
 ```
 z (latent) → param_head (MLP) → predicted [leg1, leg2, width, thickness]
                                         ↓
-                                   MSE loss vs ground truth
+                                   Loss vs ground truth
 ```
 
-The aux head provides direct supervision: if width/thickness aren't encoded in z, the param_head can't predict them and loss stays high. This forces the encoder to preserve all parameter information.
+**2. Loss Function Experiments:**
+
+| Approach | aux_weight | width r | thickness r | Issue |
+|----------|------------|---------|-------------|-------|
+| MSE (raw) | 1.0 | 0.252 | 0.107 | Leg MSE dominates (~300x larger) |
+| MSE (normalized) | 1.0 | 0.074 | 0.107 | Loss too small vs reconstruction |
+| MSE (normalized) | 100.0 | 0.057 | 0.107 | Still dominated by reconstruction |
+| Correlation | 1.0 | - | - | Collapse (negative loss dominates) |
+| Correlation | 0.1 | 0.155 | 0.102 | Best so far, but still insufficient |
+
+**3. Why Aux Head Approach Fails:**
+- Reconstruction gradients overwhelm param_head gradients
+- Encoder learns what decoder needs (leg lengths), ignores aux head signal
+- param_head can only predict what's already in latent space
+
+### Next Steps to Try
+
+**Option A: Direct Latent Supervision**
+Force first 4 latent dims to equal normalized parameters:
+```python
+direct_loss = F.mse_loss(mu[:, :4], normalize_params(target_params))
+```
+Guarantees parameters are encoded — no competition with reconstruction.
+
+**Option B: Two-Phase Training**
+1. Phase 1: Train encoder + param_head only (no decoder)
+2. Phase 2: Freeze encoder, train decoder only
+
+**Option C: Larger param_head**
+Current: 32 → 64 → 4. Try: 32 → 128 → 64 → 4 with residual.
 
 ### Implemented Architecture
 
@@ -153,11 +186,15 @@ Learned Queries (20 × 256) ─→ [Transformer Decoder × 4 layers]
 # Basic training (without aux head)
 python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
 
-# Training with auxiliary parameter head (recommended)
-python scripts/train_transformer_vae.py --epochs 100 --train-size 5000 --aux-weight 1.0
+# Training with auxiliary parameter head
+python scripts/train_transformer_vae.py --epochs 100 --aux-weight 0.1 --aux-loss-type correlation
+
+# Alternative loss types
+python scripts/train_transformer_vae.py --aux-weight 1.0 --aux-loss-type mse
+python scripts/train_transformer_vae.py --aux-weight 100.0 --aux-loss-type mse_normalized
 
 # Test parameter correlations after training
-python scripts/test_tvae.py
+python scripts/test_tvae.py outputs/vae_transformer/best_model.pt
 ```
 
 ### Default Hyperparameters
@@ -171,7 +208,8 @@ python scripts/test_tvae.py
 | Max nodes | 20 |
 | Learning rate | 1e-4 |
 | Beta (KL weight) | 0.1 (with 30% warmup) |
-| Aux weight | 1.0 (when enabled) |
+| Aux weight | 0.1 (when enabled) |
+| Aux loss type | correlation (options: mse, mse_normalized) |
 
 ### Hungarian Matching Cost Weights
 
@@ -187,12 +225,13 @@ python scripts/test_tvae.py
 | Metric | Phase 2 (MLP) | Phase 3 Current | Phase 3 Target |
 |--------|---------------|-----------------|----------------|
 | Direction accuracy | 64% | Pending | **>80%** |
-| leg1/leg2 correlation | r < 0.3 | r > 0.98 ✓ | r > 0.7 |
-| width/thickness correlation | r < 0.3 | r < 0.11 ✗ | **r > 0.7** |
+| leg1/leg2 correlation | r < 0.3 | r > 0.99 ✓ | r > 0.7 |
+| width correlation | r < 0.3 | r = 0.155 ✗ | **r > 0.7** |
+| thickness correlation | r < 0.3 | r = 0.102 ✗ | **r > 0.7** |
 | Face type accuracy | ~85% | 100% ✓ | >95% |
 | Edge prediction accuracy | N/A | 100% ✓ | >90% |
 
-**Next Step:** Train with `--aux-weight 1.0` to force encoding of width/thickness.
+**Blocker:** Aux head approach insufficient. Need direct latent supervision or two-phase training.
 
 ---
 
@@ -274,6 +313,6 @@ Topology: 6-15 faces depending on holes/fillet.
 |------------|-------------|
 | `outputs/vae_variable_v4/best_model.pt` | Phase 2 VAE v4 with collapse fix (32/32 active dims) |
 | `outputs/vae_aux/best_model.pt` | Phase 1 fixed topology VAE (80.2% direction accuracy) |
-| `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (without aux head, leg1/leg2 only) |
+| `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (leg1/leg2 encoded, width/thickness not) |
 
-**Note:** Retrain with `--aux-weight 1.0` to get checkpoint with all 4 parameters encoded.
+**Note:** Current aux head approach insufficient for width/thickness. Need architectural change.
