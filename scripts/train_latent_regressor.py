@@ -34,7 +34,8 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from graph_cad.data.dataset import VariableLBracketDataset, VariableLBracketRanges
-from graph_cad.models.graph_vae import VariableGraphVAE, VariableGraphVAEConfig
+from graph_cad.models.graph_vae import VariableGraphVAE, VariableGraphVAEConfig, VariableGraphVAEEncoder
+from graph_cad.models.transformer_decoder import TransformerDecoderConfig, TransformerGraphVAE
 
 
 PARAM_NAMES = ["leg1_length", "leg2_length", "width", "thickness"]
@@ -101,19 +102,49 @@ def denormalize_params(params: torch.Tensor) -> torch.Tensor:
     return params * (maxs - mins) + mins
 
 
-def load_variable_vae(checkpoint_path: str, device: str) -> tuple[VariableGraphVAE, dict]:
-    """Load variable topology VAE."""
+def load_vae(checkpoint_path: str, device: str) -> tuple[nn.Module, dict, str]:
+    """Load VAE (supports both Transformer and MLP decoder variants).
+
+    Returns:
+        vae: The loaded VAE model
+        checkpoint: The checkpoint dict
+        vae_type: "transformer" or "variable_mlp"
+    """
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    config = VariableGraphVAEConfig(**checkpoint["config"])
-    model = VariableGraphVAE(config)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.to(device)
-    model.eval()
-    return model, checkpoint
+
+    # Check if this is a TransformerGraphVAE (has decoder_config key)
+    if "decoder_config" in checkpoint:
+        # TransformerGraphVAE
+        encoder_config = VariableGraphVAEConfig(**checkpoint["encoder_config"])
+        encoder = VariableGraphVAEEncoder(encoder_config)
+
+        decoder_config = TransformerDecoderConfig(**checkpoint["decoder_config"])
+
+        use_param_head = checkpoint.get("use_param_head", False)
+        num_params = checkpoint.get("num_params", 4)
+
+        model = TransformerGraphVAE(
+            encoder, decoder_config,
+            use_param_head=use_param_head,
+            num_params=num_params,
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(device)
+        model.eval()
+        return model, checkpoint, "transformer"
+    else:
+        # VariableGraphVAE (MLP decoder)
+        config = VariableGraphVAEConfig(**checkpoint["config"])
+        model = VariableGraphVAE(config)
+        model.load_state_dict(checkpoint["model_state_dict"])
+        model.to(device)
+        model.eval()
+        return model, checkpoint, "variable_mlp"
 
 
 def prepare_dataset(
-    vae: VariableGraphVAE,
+    vae: nn.Module,
+    vae_type: str,
     num_samples: int,
     batch_size: int,
     seed: int,
@@ -122,7 +153,29 @@ def prepare_dataset(
     cache_dir: Path | None = None,
     split: str = "train",
 ) -> TensorDataset:
-    """Encode brackets through VAE and return (z, params) dataset."""
+    """Encode brackets through VAE and return (z, params) dataset.
+
+    Args:
+        vae: VAE model (TransformerGraphVAE or VariableGraphVAE)
+        vae_type: "transformer" or "variable_mlp"
+        num_samples: Number of samples to generate
+        batch_size: Batch size for encoding
+        seed: Random seed
+        device: Device for computation
+        desc: Description for progress bar
+        cache_dir: Optional cache directory
+        split: Dataset split name (for cache filename)
+
+    Returns:
+        TensorDataset with (z, params) pairs
+    """
+    # Get max_nodes/max_edges based on VAE type
+    if vae_type == "transformer":
+        max_nodes = vae.decoder_config.max_nodes
+        max_edges = 50  # Standard value
+    else:
+        max_nodes = vae.config.max_nodes
+        max_edges = vae.config.max_edges
 
     # Check cache
     if cache_dir is not None:
@@ -135,8 +188,8 @@ def prepare_dataset(
     # Create dataset
     dataset = VariableLBracketDataset(
         num_samples=num_samples,
-        max_nodes=vae.config.max_nodes,
-        max_edges=vae.config.max_edges,
+        max_nodes=max_nodes,
+        max_edges=max_edges,
         seed=seed,
     )
     loader = PyGDataLoader(dataset, batch_size=batch_size, shuffle=False)
@@ -272,7 +325,7 @@ def save_regressor(model, optimizer, epoch, metrics, path):
 
 def main():
     parser = argparse.ArgumentParser(description="Train Latent Regressor")
-    parser.add_argument("--vae-checkpoint", type=str, required=True)
+    parser.add_argument("--vae-checkpoint", type=str, default="outputs/vae_transformer/best_model.pt")
     parser.add_argument("--train-size", type=int, default=10000)
     parser.add_argument("--val-size", type=int, default=1000)
     parser.add_argument("--test-size", type=int, default=1000)
@@ -307,10 +360,18 @@ def main():
 
     # Load VAE
     print(f"\nLoading VAE from {args.vae_checkpoint}...")
-    vae, _ = load_variable_vae(args.vae_checkpoint, device)
+    vae, _, vae_type = load_vae(args.vae_checkpoint, device)
     for p in vae.parameters():
         p.requires_grad = False
-    print(f"  Latent dim: {vae.config.latent_dim}")
+
+    # Get latent dim based on VAE type
+    if vae_type == "transformer":
+        latent_dim = vae.decoder_config.latent_dim
+        print(f"  VAE type: TransformerGraphVAE")
+    else:
+        latent_dim = vae.config.latent_dim
+        print(f"  VAE type: VariableGraphVAE (MLP decoder)")
+    print(f"  Latent dim: {latent_dim}")
 
     cache_dir = Path(args.cache_dir) if args.cache_dir else None
 
@@ -318,20 +379,20 @@ def main():
     print(f"\nEncoding training data ({args.train_size} samples)...")
     start = time.time()
     train_dataset = prepare_dataset(
-        vae, args.train_size, args.batch_size, args.seed, device,
+        vae, vae_type, args.train_size, args.batch_size, args.seed, device,
         "Train", cache_dir, "train"
     )
     print(f"  Done in {time.time() - start:.1f}s")
 
     print(f"Encoding validation data ({args.val_size} samples)...")
     val_dataset = prepare_dataset(
-        vae, args.val_size, args.batch_size, args.seed + 1000, device,
+        vae, vae_type, args.val_size, args.batch_size, args.seed + 1000, device,
         "Val", cache_dir, "val"
     )
 
     print(f"Encoding test data ({args.test_size} samples)...")
     test_dataset = prepare_dataset(
-        vae, args.test_size, args.batch_size, args.seed + 2000, device,
+        vae, vae_type, args.test_size, args.batch_size, args.seed + 2000, device,
         "Test", cache_dir, "test"
     )
 
@@ -341,7 +402,7 @@ def main():
 
     # Create model
     config = LatentRegressorConfig(
-        latent_dim=vae.config.latent_dim,
+        latent_dim=latent_dim,
         hidden_dims=tuple(args.hidden_dims),
         dropout=args.dropout,
     )
