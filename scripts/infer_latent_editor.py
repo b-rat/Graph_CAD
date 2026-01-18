@@ -698,13 +698,13 @@ def main():
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_transformer/best_model.pt",
+        default="outputs/vae_transformer_aux2_w100/best_model.pt",
         help="Path to trained VAE checkpoint (supports Transformer VAE and MLP VAE)",
     )
     parser.add_argument(
         "--editor-checkpoint",
         type=str,
-        default="outputs/latent_editor/best_model.pt",
+        default="outputs/latent_editor_tvae/best_model.pt",
         help="Path to trained Latent Editor checkpoint",
     )
     parser.add_argument(
@@ -716,7 +716,7 @@ def main():
     parser.add_argument(
         "--latent-regressor-checkpoint",
         type=str,
-        default=None,
+        default="outputs/latent_regressor_tvae/best_model.pt",
         help="Path to trained LatentRegressor checkpoint (predicts 4 core params from z)",
     )
     parser.add_argument(
@@ -1012,8 +1012,53 @@ def main():
     use_latent_regressor = False
     use_geometric_solver = False
 
-    # Try geometric solver first (preferred for VariableGraphVAE with 13D features)
-    if edit_decoded.get("face_types") is not None and edit_decoded.get("node_mask") is not None:
+    # Check for latent regressor first (higher priority if explicitly provided)
+    latent_regressor_path = Path(args.latent_regressor_checkpoint) if args.latent_regressor_checkpoint else None
+    full_latent_regressor_path = Path(args.full_latent_regressor_checkpoint) if args.full_latent_regressor_checkpoint else None
+
+    # Use latent regressor if explicitly provided (bypasses geometric solver)
+    if latent_regressor_path and latent_regressor_path.exists():
+        use_latent_regressor = True
+        latent_regressor, latent_reg_config = load_latent_regressor(
+            args.latent_regressor_checkpoint, device
+        )
+        param_names = ["leg1_length", "leg2_length", "width", "thickness"]
+
+        # Import ranges for denormalization
+        from graph_cad.data.dataset import VariableLBracketRanges
+        ranges = VariableLBracketRanges()
+
+        def denormalize_latent_params(params_norm):
+            mins = torch.tensor([
+                ranges.leg1_length[0], ranges.leg2_length[0],
+                ranges.width[0], ranges.thickness[0],
+            ], device=params_norm.device)
+            maxs = torch.tensor([
+                ranges.leg1_length[1], ranges.leg2_length[1],
+                ranges.width[1], ranges.thickness[1],
+            ], device=params_norm.device)
+            return params_norm * (maxs - mins) + mins
+
+        # Predict parameters directly from latent vectors
+        with torch.no_grad():
+            orig_params_norm = latent_regressor(z_src)
+            orig_params_pred = denormalize_latent_params(orig_params_norm).cpu().numpy().flatten()
+
+            edit_params_norm = latent_regressor(z_edited)
+            edit_params_pred = denormalize_latent_params(edit_params_norm).cpu().numpy().flatten()
+
+        print("  Using LatentRegressor (z → 4 core params)")
+        print(f"    Bypassing geometric solver for better accuracy")
+
+    # Full latent regressor is handled in a later section (needs additional processing for STEP generation)
+    # Geometric solver is used as fallback when no regressor is explicitly provided
+
+    # Fall back to geometric solver (only if no latent regressors provided)
+    elif (
+        not (full_latent_regressor_path and full_latent_regressor_path.exists())
+        and edit_decoded.get("face_types") is not None
+        and edit_decoded.get("node_mask") is not None
+    ):
         from graph_cad.utils.geometric_solver import solve_params_from_features
         from graph_cad.data.l_bracket import VariableLBracket
 
@@ -1077,22 +1122,15 @@ def main():
             print("  Falling back to regressor...")
             use_geometric_solver = False
 
-    # Check for regressors in order of priority (only used if geometric solver fails)
-    full_latent_regressor_path = Path(args.full_latent_regressor_checkpoint) if args.full_latent_regressor_checkpoint else None
-    latent_regressor_path = Path(args.latent_regressor_checkpoint) if args.latent_regressor_checkpoint else None
-    regressor_path = Path(args.regressor_checkpoint)
-
-    # Import ranges for denormalization
-    from graph_cad.data.dataset import VariableLBracketRanges
-    ranges = VariableLBracketRanges()
-
     # For full regressor: store full predictions for STEP generation
     full_regressor_outputs_orig = None
     full_regressor_outputs_edit = None
     use_full_regressor = False
 
-    # Only use regressors if geometric solver wasn't used or failed
-    if not use_geometric_solver and full_latent_regressor_path and full_latent_regressor_path.exists():
+    # Only use feature regressor if neither latent regressor nor geometric solver was used
+    regressor_path = Path(args.regressor_checkpoint)
+
+    if not use_latent_regressor and full_latent_regressor_path and full_latent_regressor_path.exists():
         # Use full latent regressor (z → ALL params, can generate STEP)
         use_full_regressor = True
         use_latent_regressor = True
@@ -1100,6 +1138,10 @@ def main():
             args.full_latent_regressor_checkpoint, device
         )
         param_names = ["leg1_length", "leg2_length", "width", "thickness"]
+
+        # Import ranges for denormalization
+        from graph_cad.data.dataset import VariableLBracketRanges
+        ranges = VariableLBracketRanges()
 
         # Denormalize core params
         def denormalize_core(params_norm):
@@ -1125,36 +1167,7 @@ def main():
 
         print("  Using FullLatentRegressor (z → ALL params, can generate STEP)")
 
-    elif not use_geometric_solver and latent_regressor_path and latent_regressor_path.exists():
-        # Use simple latent regressor (z → 4 core params only)
-        use_latent_regressor = True
-        latent_regressor, latent_reg_config = load_latent_regressor(
-            args.latent_regressor_checkpoint, device
-        )
-        param_names = ["leg1_length", "leg2_length", "width", "thickness"]
-
-        def denormalize_latent_params(params_norm):
-            mins = torch.tensor([
-                ranges.leg1_length[0], ranges.leg2_length[0],
-                ranges.width[0], ranges.thickness[0],
-            ], device=params_norm.device)
-            maxs = torch.tensor([
-                ranges.leg1_length[1], ranges.leg2_length[1],
-                ranges.width[1], ranges.thickness[1],
-            ], device=params_norm.device)
-            return params_norm * (maxs - mins) + mins
-
-        # Predict parameters directly from latent vectors
-        with torch.no_grad():
-            orig_params_norm = latent_regressor(z_src)
-            orig_params_pred = denormalize_latent_params(orig_params_norm).cpu().numpy().flatten()
-
-            edit_params_norm = latent_regressor(z_edited)
-            edit_params_pred = denormalize_latent_params(edit_params_norm).cpu().numpy().flatten()
-
-        print("  Using LatentRegressor (z → 4 core params, cannot generate STEP)")
-
-    elif not use_geometric_solver and regressor_path.exists():
+    elif not use_latent_regressor and not use_geometric_solver and regressor_path.exists():
         # Use feature regressor (decode → features → params)
         regressor, regressor_type = load_feature_regressor(args.regressor_checkpoint, device)
 
@@ -1199,13 +1212,12 @@ def main():
 
         print(f"  Using FeatureRegressor ({regressor_type} topology, decode → features → {len(param_names)} params)")
 
-    elif not use_geometric_solver:
+    elif not use_geometric_solver and not use_latent_regressor:
         print(f"  No parameter extraction method available.")
-        print("  For VariableGraphVAE with 13D features, use --vae-checkpoint outputs/vae_variable_13d/best_model.pt")
-        print("  Fallback options:")
-        print(f"    --full-latent-regressor-checkpoint outputs/full_latent_regressor/best_model.pt  (generates STEP)")
-        print(f"    --latent-regressor-checkpoint outputs/latent_regressor/best_model.pt  (4 core params only)")
-        print(f"    --regressor-checkpoint outputs/feature_regressor/best_model.pt  (via decoder)")
+        print("  Options:")
+        print(f"    --latent-regressor-checkpoint outputs/latent_regressor_tvae/best_model.pt  (z → 4 core params)")
+        print(f"    --full-latent-regressor-checkpoint outputs/full_latent_regressor/best_model.pt  (z → ALL params, generates STEP)")
+        print(f"    --regressor-checkpoint outputs/feature_regressor/best_model.pt  (decode → features → params)")
 
     # Display results if we have predictions
     if orig_params_pred is not None:
