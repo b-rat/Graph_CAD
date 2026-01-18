@@ -3,10 +3,12 @@
 Systematic exploration of the instruction domain for the Latent Editor.
 
 This script loads models once and runs inference across a grid of:
-  - Parameters: leg1, leg2, width, thickness, hole1_diameter, hole2_diameter
+  - Parameters: leg1_length, leg2_length (width/thickness not encoded in latent)
   - Directions: increase, decrease
-  - Magnitudes: parameter-appropriate values (e.g., 10/20/30mm for legs)
+  - Magnitudes: 10, 20, 30, 50mm
   - Starting brackets: sampled across the parameter space
+
+IMPORTANT: Uses explicit +/- signs in instructions (required by current model).
 
 Outputs a comprehensive JSON file with all results for analysis.
 
@@ -29,7 +31,6 @@ import time
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 import torch
@@ -43,92 +44,36 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 # Instruction Domain Definition
 # =============================================================================
 
-@dataclass
-class InstructionTemplate:
-    """Template for generating instructions."""
-    parameter: str  # Internal parameter name
-    display_name: str  # Human-readable name for instructions
-    direction: str  # "increase" or "decrease"
-    magnitude: float  # Amount in mm
-    templates: list[str]  # Instruction templates with {name} and {amount} placeholders
+# CRITICAL: Instructions must use +/- signs for the model to work correctly
+# The model learned to rely on +/- tokens rather than "longer/shorter" semantics
 
-
-# Define the instruction domain
 INSTRUCTION_DOMAIN = {
     "leg1_length": {
         "display_name": "leg1",
         "magnitudes": [10, 20, 30, 50],
         "increase_templates": [
-            "make {name} {amount}mm longer",
-            "increase {name} by {amount}mm",
-            "extend {name} by {amount}mm",
+            "make {name} +{amount}mm longer",
+            "change {name} length by +{amount}mm",
+            "{name} +{amount}mm",
         ],
         "decrease_templates": [
-            "make {name} {amount}mm shorter",
-            "decrease {name} by {amount}mm",
-            "shorten {name} by {amount}mm",
+            "make {name} -{amount}mm shorter",
+            "change {name} length by -{amount}mm",
+            "{name} -{amount}mm",
         ],
     },
     "leg2_length": {
         "display_name": "leg2",
         "magnitudes": [10, 20, 30, 50],
         "increase_templates": [
-            "make {name} {amount}mm longer",
-            "increase {name} by {amount}mm",
-            "extend {name} by {amount}mm",
+            "make {name} +{amount}mm longer",
+            "change {name} length by +{amount}mm",
+            "{name} +{amount}mm",
         ],
         "decrease_templates": [
-            "make {name} {amount}mm shorter",
-            "decrease {name} by {amount}mm",
-            "shorten {name} by {amount}mm",
-        ],
-    },
-    "width": {
-        "display_name": "width",
-        "magnitudes": [5, 10, 15],
-        "increase_templates": [
-            "make it {amount}mm wider",
-            "increase width by {amount}mm",
-        ],
-        "decrease_templates": [
-            "make it {amount}mm narrower",
-            "decrease width by {amount}mm",
-        ],
-    },
-    "thickness": {
-        "display_name": "thickness",
-        "magnitudes": [1, 2, 3],
-        "increase_templates": [
-            "make it {amount}mm thicker",
-            "increase thickness by {amount}mm",
-        ],
-        "decrease_templates": [
-            "make it {amount}mm thinner",
-            "decrease thickness by {amount}mm",
-        ],
-    },
-    "hole1_diameter": {
-        "display_name": "hole1",
-        "magnitudes": [1, 2, 3],
-        "increase_templates": [
-            "make {name} {amount}mm larger",
-            "increase {name} diameter by {amount}mm",
-        ],
-        "decrease_templates": [
-            "make {name} {amount}mm smaller",
-            "decrease {name} diameter by {amount}mm",
-        ],
-    },
-    "hole2_diameter": {
-        "display_name": "hole2",
-        "magnitudes": [1, 2, 3],
-        "increase_templates": [
-            "make {name} {amount}mm larger",
-            "increase {name} diameter by {amount}mm",
-        ],
-        "decrease_templates": [
-            "make {name} {amount}mm smaller",
-            "decrease {name} diameter by {amount}mm",
+            "make {name} -{amount}mm shorter",
+            "change {name} length by -{amount}mm",
+            "{name} -{amount}mm",
         ],
     },
 }
@@ -138,16 +83,19 @@ QUICK_DOMAIN = {
     "leg1_length": {
         "display_name": "leg1",
         "magnitudes": [20],
-        "increase_templates": ["make {name} {amount}mm longer"],
-        "decrease_templates": ["make {name} {amount}mm shorter"],
+        "increase_templates": ["make {name} +{amount}mm longer"],
+        "decrease_templates": ["make {name} -{amount}mm shorter"],
     },
     "leg2_length": {
         "display_name": "leg2",
         "magnitudes": [20],
-        "increase_templates": ["make {name} {amount}mm longer"],
-        "decrease_templates": ["make {name} {amount}mm shorter"],
+        "increase_templates": ["make {name} +{amount}mm longer"],
+        "decrease_templates": ["make {name} -{amount}mm shorter"],
     },
 }
+
+# Parameter names for latent regressor (4 core params)
+PARAM_NAMES = ["leg1_length", "leg2_length", "width", "thickness"]
 
 
 # =============================================================================
@@ -178,36 +126,9 @@ class TrialResult:
     target_param_change: float  # Actual change in target parameter
     target_param_pct: float  # Percentage of requested magnitude achieved
     correct_direction: bool  # Did it move in the right direction?
-    node_mse: float
-    edge_mse: float
 
     # Timing
     inference_time_ms: float
-
-
-@dataclass
-class ExplorationResults:
-    """Complete exploration results."""
-    # Metadata
-    timestamp: str
-    num_brackets: int
-    num_trials: int
-    total_time_seconds: float
-
-    # Model info
-    vae_checkpoint: str
-    editor_checkpoint: str
-    regressor_checkpoint: str
-
-    # Domain info
-    parameters_tested: list[str]
-    magnitudes_tested: dict[str, list[float]]
-
-    # Results
-    trials: list[dict]
-
-    # Summary statistics
-    summary: dict
 
 
 # =============================================================================
@@ -221,46 +142,63 @@ class ModelBundle:
         self,
         vae_checkpoint: str,
         editor_checkpoint: str,
-        regressor_checkpoint: str,
+        latent_regressor_checkpoint: str,
         device: str,
     ):
         self.device = device
         self.vae = None
+        self.vae_type = None
         self.editor = None
-        self.regressor = None
+        self.latent_regressor = None
 
-        self._load_models(vae_checkpoint, editor_checkpoint, regressor_checkpoint)
+        self._load_models(vae_checkpoint, editor_checkpoint, latent_regressor_checkpoint)
 
     def _load_models(
         self,
         vae_checkpoint: str,
         editor_checkpoint: str,
-        regressor_checkpoint: str,
+        latent_regressor_checkpoint: str,
     ):
         """Load all models once."""
-        from graph_cad.training.vae_trainer import load_checkpoint as load_vae_checkpoint
-        from graph_cad.models.feature_regressor import load_feature_regressor
-        from graph_cad.models.latent_editor import (
-            LatentEditor,
-            load_llm_with_lora,
-        )
+        from graph_cad.models.graph_vae import VariableGraphVAEConfig, VariableGraphVAEEncoder
+        from graph_cad.models.transformer_decoder import TransformerDecoderConfig, TransformerGraphVAE
+        from graph_cad.models.latent_editor import LatentEditor, load_llm_with_lora
         from graph_cad.training.edit_trainer import load_editor_checkpoint
 
         print("=" * 60)
         print("LOADING MODELS (this happens once)")
         print("=" * 60)
 
-        # Load VAE
+        # Load VAE (Transformer VAE)
         print(f"\n[1/3] Loading VAE from {vae_checkpoint}...")
-        self.vae, _ = load_vae_checkpoint(vae_checkpoint, device=self.device)
-        self.vae.eval()
-        print(f"  Latent dim: {self.vae.config.latent_dim}")
+        checkpoint = torch.load(vae_checkpoint, map_location=self.device, weights_only=False)
 
-        # Load FeatureRegressor
-        print(f"\n[2/3] Loading FeatureRegressor from {regressor_checkpoint}...")
-        self.regressor, _ = load_feature_regressor(regressor_checkpoint, device=self.device)
-        self.regressor.eval()
-        print(f"  Architecture: {self.regressor.config.hidden_dims}")
+        if "decoder_config" in checkpoint:
+            # TransformerGraphVAE
+            encoder_config = VariableGraphVAEConfig(**checkpoint["encoder_config"])
+            encoder = VariableGraphVAEEncoder(encoder_config)
+            decoder_config = TransformerDecoderConfig(**checkpoint["decoder_config"])
+            use_param_head = checkpoint.get("use_param_head", False)
+            num_params = checkpoint.get("num_params", 4)
+
+            self.vae = TransformerGraphVAE(
+                encoder, decoder_config,
+                use_param_head=use_param_head,
+                num_params=num_params,
+            )
+            self.vae.load_state_dict(checkpoint["model_state_dict"])
+            self.vae.to(self.device)
+            self.vae.eval()
+            self.vae_type = "transformer"
+            print(f"  VAE type: TransformerGraphVAE")
+            print(f"  Latent dim: {decoder_config.latent_dim}")
+        else:
+            raise ValueError("Only Transformer VAE is supported. Use outputs/vae_transformer_aux2_w100/best_model.pt")
+
+        # Load Latent Regressor (z -> params directly)
+        print(f"\n[2/3] Loading Latent Regressor from {latent_regressor_checkpoint}...")
+        self._load_latent_regressor(latent_regressor_checkpoint)
+        print(f"  Config: {self.latent_regressor.config.latent_dim}D → {self.latent_regressor.config.hidden_dims} → 4D")
 
         # Load Latent Editor (most expensive)
         print(f"\n[3/3] Loading Latent Editor from {editor_checkpoint}...")
@@ -294,6 +232,46 @@ class ModelBundle:
         print("ALL MODELS LOADED")
         print("=" * 60 + "\n")
 
+    def _load_latent_regressor(self, checkpoint_path: str):
+        """Load the latent regressor model."""
+        from dataclasses import dataclass
+        import torch.nn as nn
+
+        @dataclass
+        class LatentRegressorConfig:
+            latent_dim: int = 32
+            hidden_dims: tuple[int, ...] = (256, 128, 64)
+            dropout: float = 0.1
+            use_batch_norm: bool = True
+            num_params: int = 4
+
+        class LatentRegressor(nn.Module):
+            def __init__(self, config: LatentRegressorConfig):
+                super().__init__()
+                self.config = config
+                layers = []
+                in_dim = config.latent_dim
+                for hidden_dim in config.hidden_dims:
+                    layers.append(nn.Linear(in_dim, hidden_dim))
+                    if config.use_batch_norm:
+                        layers.append(nn.BatchNorm1d(hidden_dim))
+                    layers.append(nn.ReLU())
+                    layers.append(nn.Dropout(config.dropout))
+                    in_dim = hidden_dim
+                self.backbone = nn.Sequential(*layers)
+                self.output_head = nn.Linear(in_dim, config.num_params)
+
+            def forward(self, z: torch.Tensor) -> torch.Tensor:
+                h = self.backbone(z)
+                return self.output_head(h)
+
+        checkpoint = torch.load(checkpoint_path, map_location=self.device, weights_only=False)
+        config = LatentRegressorConfig(**checkpoint["config"])
+        self.latent_regressor = LatentRegressor(config)
+        self.latent_regressor.load_state_dict(checkpoint["model_state_dict"])
+        self.latent_regressor.to(self.device)
+        self.latent_regressor.eval()
+
 
 # =============================================================================
 # Inference Functions
@@ -305,24 +283,49 @@ def run_single_inference(
     instruction: str,
 ) -> dict:
     """Run inference for a single bracket + instruction pair."""
-    from graph_cad.data import LBracket, extract_graph_from_solid
-    from graph_cad.models.parameter_regressor import PARAMETER_NAMES, denormalize_parameters
+    from graph_cad.data.l_bracket import VariableLBracket
+    from graph_cad.data.graph_extraction import extract_graph_from_solid_variable
+    from graph_cad.data.dataset import VariableLBracketRanges
 
     device = models.device
+    MAX_NODES = 20
+    MAX_EDGES = 50
 
     # Create bracket and extract graph
-    bracket = LBracket(**bracket_params)
+    bracket = VariableLBracket(**bracket_params)
     solid = bracket.to_solid()
-    graph = extract_graph_from_solid(solid)
+    graph = extract_graph_from_solid_variable(solid)
+
+    num_nodes = graph.num_faces
+    num_edges = graph.num_edges
+
+    # Pad to fixed size for VAE
+    node_features = np.zeros((MAX_NODES, 13), dtype=np.float32)
+    node_features[:num_nodes] = graph.node_features
+
+    face_types = np.zeros(MAX_NODES, dtype=np.int64)
+    face_types[:num_nodes] = graph.face_types
+
+    node_mask = np.zeros(MAX_NODES, dtype=np.float32)
+    node_mask[:num_nodes] = 1.0
+
+    edge_features = np.zeros((MAX_EDGES, 2), dtype=np.float32)
+    edge_features[:num_edges] = graph.edge_features
+
+    edge_index = np.zeros((2, MAX_EDGES), dtype=np.int64)
+    edge_index[:, :num_edges] = graph.edge_index
 
     # Convert to tensors
-    x = torch.tensor(graph.node_features, dtype=torch.float32, device=device)
-    edge_index = torch.tensor(graph.edge_index, dtype=torch.long, device=device)
-    edge_attr = torch.tensor(graph.edge_features, dtype=torch.float32, device=device)
+    x = torch.tensor(node_features, dtype=torch.float32, device=device)
+    ft = torch.tensor(face_types, dtype=torch.long, device=device)
+    ei = torch.tensor(edge_index, dtype=torch.long, device=device)
+    ea = torch.tensor(edge_features, dtype=torch.float32, device=device)
+    nm = torch.tensor(node_mask, dtype=torch.float32, device=device)
+    batch = torch.zeros(MAX_NODES, dtype=torch.long, device=device)
 
     # Encode
     with torch.no_grad():
-        mu, logvar = models.vae.encode(x, edge_index, edge_attr, batch=None)
+        mu, _ = models.vae.encode(x, ft, ei, ea, batch, nm)
         z_src = mu
 
     # Apply instruction
@@ -334,33 +337,30 @@ def run_single_inference(
         z_edited = outputs["z_edited"].to(device)
     inference_time_ms = (time.perf_counter() - start_time) * 1000
 
-    # Decode
+    # Predict parameters from latent vectors (not decoded features)
+    ranges = VariableLBracketRanges()
+
+    def denormalize(params_norm):
+        mins = torch.tensor([
+            ranges.leg1_length[0], ranges.leg2_length[0],
+            ranges.width[0], ranges.thickness[0],
+        ], device=params_norm.device)
+        maxs = torch.tensor([
+            ranges.leg1_length[1], ranges.leg2_length[1],
+            ranges.width[1], ranges.thickness[1],
+        ], device=params_norm.device)
+        return params_norm * (maxs - mins) + mins
+
     with torch.no_grad():
-        orig_node_recon, orig_edge_recon = models.vae.decode(z_src)
-        edit_node_recon, edit_edge_recon = models.vae.decode(z_edited)
-
-    # Predict parameters
-    with torch.no_grad():
-        orig_params_norm = models.regressor(orig_node_recon, orig_edge_recon)
-        edit_params_norm = models.regressor(edit_node_recon, edit_edge_recon)
-        orig_params = denormalize_parameters(orig_params_norm).cpu().numpy().flatten()
-        edit_params = denormalize_parameters(edit_params_norm).cpu().numpy().flatten()
-
-    # Compute metrics
-    orig_node_np = orig_node_recon.cpu().numpy()[0]
-    edit_node_np = edit_node_recon.cpu().numpy()[0]
-    orig_edge_np = orig_edge_recon.cpu().numpy()[0]
-    edit_edge_np = edit_edge_recon.cpu().numpy()[0]
-
-    node_mse = float(np.mean((edit_node_np - orig_node_np) ** 2))
-    edge_mse = float(np.mean((edit_edge_np - orig_edge_np) ** 2))
+        orig_params_norm = models.latent_regressor(z_src)
+        edit_params_norm = models.latent_regressor(z_edited)
+        orig_params = denormalize(orig_params_norm).cpu().numpy().flatten()
+        edit_params = denormalize(edit_params_norm).cpu().numpy().flatten()
 
     return {
         "delta_norm": float(delta_z.norm().item()),
-        "original_params": {name: float(orig_params[i]) for i, name in enumerate(PARAMETER_NAMES)},
-        "edited_params": {name: float(edit_params[i]) for i, name in enumerate(PARAMETER_NAMES)},
-        "node_mse": node_mse,
-        "edge_mse": edge_mse,
+        "original_params": {name: float(orig_params[i]) for i, name in enumerate(PARAM_NAMES)},
+        "edited_params": {name: float(edit_params[i]) for i, name in enumerate(PARAM_NAMES)},
         "inference_time_ms": inference_time_ms,
     }
 
@@ -391,7 +391,7 @@ def sample_brackets(
     stratified: bool = True,
 ) -> list[dict]:
     """Sample brackets across the parameter space."""
-    from graph_cad.data import LBracket
+    from graph_cad.data.l_bracket import VariableLBracket, VariableLBracketRanges
 
     rng = np.random.default_rng(seed)
     brackets = []
@@ -407,16 +407,16 @@ def sample_brackets(
             for i in range(n):
                 bracket = _sample_bracket_in_region(rng, region)
                 brackets.append({
-                    "params": bracket.to_dict(),
+                    "params": _bracket_to_core_params(bracket),
                     "seed": int(rng.integers(0, 2**31)),
                     "region": region,
                 })
     else:
         # Pure random sampling
         for i in range(num_brackets):
-            bracket = LBracket.random(rng)
+            bracket = VariableLBracket.random(rng)
             brackets.append({
-                "params": bracket.to_dict(),
+                "params": _bracket_to_core_params(bracket),
                 "seed": int(rng.integers(0, 2**31)),
                 "region": "random",
             })
@@ -424,11 +424,26 @@ def sample_brackets(
     return brackets
 
 
-def _sample_bracket_in_region(rng: np.random.Generator, region: str) -> "LBracket":
-    """Sample a bracket biased toward a particular region of parameter space."""
-    from graph_cad.data import LBracket, LBracketRanges
+def _bracket_to_core_params(bracket) -> dict:
+    """Extract core params from a VariableLBracket for recreation."""
+    return {
+        "leg1_length": bracket.leg1_length,
+        "leg2_length": bracket.leg2_length,
+        "width": bracket.width,
+        "thickness": bracket.thickness,
+        "fillet_radius": bracket.fillet_radius,
+        "hole1_diameters": list(bracket.hole1_diameters),
+        "hole1_distances": list(bracket.hole1_distances),
+        "hole2_diameters": list(bracket.hole2_diameters),
+        "hole2_distances": list(bracket.hole2_distances),
+    }
 
-    ranges = LBracketRanges()
+
+def _sample_bracket_in_region(rng: np.random.Generator, region: str):
+    """Sample a bracket biased toward a particular region of parameter space."""
+    from graph_cad.data.l_bracket import VariableLBracket, VariableLBracketRanges
+
+    ranges = VariableLBracketRanges()
 
     # Define region biases (0-1 range within each parameter's bounds)
     if region == "small":
@@ -440,56 +455,29 @@ def _sample_bracket_in_region(rng: np.random.Generator, region: str) -> "LBracke
 
     def sample_param(param_range: tuple[float, float]) -> float:
         low, high = param_range
-        # Sample within biased region
         t = rng.uniform(bias_low, bias_high)
         return low + t * (high - low)
 
     # Try up to 10 times to generate a valid bracket
     for attempt in range(10):
-        leg1 = sample_param(ranges.leg1_length)
-        leg2 = sample_param(ranges.leg2_length)
-        width = sample_param(ranges.width)
-        thickness = sample_param(ranges.thickness)
-        hole1_d = sample_param(ranges.hole1_diameter)
-        hole2_d = sample_param(ranges.hole2_diameter)
-
-        # Compute valid hole distance ranges using exact LBracket constraints:
-        # hole_distance <= leg_length - thickness - hole_diameter/2
-        # hole_distance >= hole_diameter/2 (hole must not extend past leg end)
-
-        # Hole 1 (in leg1)
-        min_hole1_dist = hole1_d / 2 + 1  # Small margin from leg end
-        max_hole1_dist = leg1 - thickness - hole1_d / 2 - 1  # Margin from inner corner
-
-        # Hole 2 (in leg2)
-        min_hole2_dist = hole2_d / 2 + 1
-        max_hole2_dist = leg2 - thickness - hole2_d / 2 - 1
-
-        # Check if valid ranges exist
-        if max_hole1_dist <= min_hole1_dist or max_hole2_dist <= min_hole2_dist:
-            # Geometry too tight, retry with new random params
-            continue
-
-        hole1_dist = rng.uniform(min_hole1_dist, max_hole1_dist)
-        hole2_dist = rng.uniform(min_hole2_dist, max_hole2_dist)
-
         try:
-            return LBracket(
-                leg1_length=leg1,
-                leg2_length=leg2,
-                width=width,
-                thickness=thickness,
-                hole1_distance=hole1_dist,
-                hole1_diameter=hole1_d,
-                hole2_distance=hole2_dist,
-                hole2_diameter=hole2_d,
+            bracket = VariableLBracket(
+                leg1_length=sample_param(ranges.leg1_length),
+                leg2_length=sample_param(ranges.leg2_length),
+                width=sample_param(ranges.width),
+                thickness=sample_param(ranges.thickness),
+                fillet_radius=0.0,  # Keep simple
+                hole1_diameters=(),  # No holes for simpler testing
+                hole1_distances=(),
+                hole2_diameters=(),
+                hole2_distances=(),
             )
+            return bracket
         except ValueError:
-            # Validation failed, retry
             continue
 
-    # Fallback to LBracket.random() if region sampling keeps failing
-    return LBracket.random(rng)
+    # Fallback to random
+    return VariableLBracket.random(rng)
 
 
 # =============================================================================
@@ -503,8 +491,6 @@ def run_exploration(
     progress: bool = True,
 ) -> list[TrialResult]:
     """Run the full exploration across all brackets and instructions."""
-    from graph_cad.models.parameter_regressor import PARAMETER_NAMES
-
     results = []
 
     # Build trial list
@@ -561,7 +547,7 @@ def run_exploration(
             # Compute all param changes
             param_changes = {
                 name: inference_result["edited_params"][name] - inference_result["original_params"][name]
-                for name in PARAMETER_NAMES
+                for name in PARAM_NAMES
             }
 
             result = TrialResult(
@@ -579,8 +565,6 @@ def run_exploration(
                 target_param_change=actual_change,
                 target_param_pct=target_pct,
                 correct_direction=correct_direction,
-                node_mse=inference_result["node_mse"],
-                edge_mse=inference_result["edge_mse"],
                 inference_time_ms=inference_result["inference_time_ms"],
             )
             results.append(result)
@@ -687,7 +671,7 @@ def print_summary(summary: dict):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Systematically explore the instruction domain",
+        description="Systematically explore the instruction domain (leg lengths only)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
 
@@ -707,7 +691,7 @@ def main():
     parser.add_argument(
         "--quick",
         action="store_true",
-        help="Quick mode: test only leg1/leg2 with single magnitude",
+        help="Quick mode: test only leg1/leg2 with single magnitude (20mm)",
     )
     parser.add_argument(
         "--stratified",
@@ -716,21 +700,21 @@ def main():
         help="Stratified sampling across parameter space regions",
     )
 
-    # Model checkpoints
+    # Model checkpoints (defaults to current working configuration)
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_16d_lowbeta/best_model.pt",
+        default="outputs/vae_transformer_aux2_w100/best_model.pt",
     )
     parser.add_argument(
         "--editor-checkpoint",
         type=str,
-        default="outputs/latent_editor/best_model.pt",
+        default="outputs/latent_editor_tvae/best_model.pt",
     )
     parser.add_argument(
-        "--regressor-checkpoint",
+        "--latent-regressor-checkpoint",
         type=str,
-        default="outputs/feature_regressor/best_model.pt",
+        default="outputs/latent_regressor_tvae/best_model.pt",
     )
 
     # Output
@@ -770,7 +754,7 @@ def main():
     models = ModelBundle(
         args.vae_checkpoint,
         args.editor_checkpoint,
-        args.regressor_checkpoint,
+        args.latent_regressor_checkpoint,
         device,
     )
     load_time = time.time() - start_time
@@ -810,7 +794,7 @@ def main():
         "checkpoints": {
             "vae": args.vae_checkpoint,
             "editor": args.editor_checkpoint,
-            "regressor": args.regressor_checkpoint,
+            "latent_regressor": args.latent_regressor_checkpoint,
         },
         "domain": {
             param: {
