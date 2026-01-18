@@ -1,0 +1,20 @@
+{
+  "vae_checkpoint": "outputs/vae_transformer_aux2_w100/best_model.pt",
+  "latent_dim": 32,
+  "num_samples": 10000,
+  "train_size": 8000,
+  "val_size": 1000,
+  "test_size": 1000,
+  "seed": 42,
+  "paired": false,
+  "edit_types": [
+    "single_leg",
+    "both_legs",
+    "noop"
+  ],
+  "parameters": [
+    "leg1_length",
+    "leg2_length"
+  ],
+  "variable_topology": true
+}
