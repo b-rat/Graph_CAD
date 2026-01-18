@@ -298,10 +298,16 @@ Topology: 6-15 faces depending on holes/fillet.
 |------|---------|
 | `graph_cad/models/transformer_decoder.py` | **Phase 3** Transformer decoder + VAE wrapper + param_head |
 | `graph_cad/models/graph_vae.py` | GAT encoder (used by both Phase 2 & 3) |
+| `graph_cad/models/latent_editor.py` | Mistral 7B + LoRA for latent space editing |
 | `graph_cad/models/losses.py` | All loss functions including Hungarian matching + aux loss |
 | `graph_cad/data/dataset.py` | VariableLBracketDataset |
+| `graph_cad/data/edit_dataset.py` | Edit instruction dataset for latent editor |
 | `graph_cad/data/graph_extraction.py` | Graph extraction from STEP |
 | `scripts/train_transformer_vae.py` | **Phase 3** training script (supports --aux-weight) |
+| `scripts/train_latent_editor.py` | Train latent editor on edit data |
+| `scripts/train_latent_regressor.py` | Train z → params regressor |
+| `scripts/generate_edit_data_transformer.py` | Generate leg-length edit training data |
+| `scripts/infer_latent_editor.py` | **Inference** Full pipeline: STEP → edit → STEP |
 | `scripts/test_tvae.py` | Test parameter correlations in latent space |
 | `scripts/train_variable_vae.py` | Phase 2 training script (MLP decoder) |
 
@@ -311,8 +317,103 @@ Topology: 6-15 faces depending on holes/fillet.
 
 | Checkpoint | Description |
 |------------|-------------|
+| `outputs/vae_transformer_aux2_w100/best_model.pt` | **Current best** Transformer VAE with aux head (leg1/leg2 r>0.98) |
+| `outputs/latent_editor_tvae/best_model.pt` | Latent editor for leg length operations |
+| `outputs/latent_regressor_tvae/best_model.pt` | z → params regressor (2-3mm MAE for legs) |
 | `outputs/vae_variable_v4/best_model.pt` | Phase 2 VAE v4 with collapse fix (32/32 active dims) |
 | `outputs/vae_aux/best_model.pt` | Phase 1 fixed topology VAE (80.2% direction accuracy) |
-| `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (leg1/leg2 encoded, width/thickness not) |
+| `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (no aux head) |
 
 **Note:** Current aux head approach insufficient for width/thickness. Need architectural change.
+
+---
+
+## Latent Editor Pipeline (Leg Length Only)
+
+### Current Working Configuration
+
+Due to width/thickness encoding limitations, the latent editor is trained for **leg length operations only**.
+
+| Component | Checkpoint | Description |
+|-----------|------------|-------------|
+| VAE | `outputs/vae_transformer_aux2_w100/best_model.pt` | Transformer VAE with aux head (w=100) |
+| Latent Editor | `outputs/latent_editor_tvae/best_model.pt` | Mistral 7B + LoRA, trained on leg edits |
+| Latent Regressor | `outputs/latent_regressor_tvae/best_model.pt` | z → 4 core params (bypasses decoder) |
+
+### Training Data
+
+Edit data location: `data/edit_data_legs/`
+
+```json
+{
+  "vae_checkpoint": "outputs/vae_transformer_aux2_w100/best_model.pt",
+  "latent_dim": 32,
+  "edit_types": ["single_leg", "both_legs", "noop"],
+  "parameters": ["leg1_length", "leg2_length"]
+}
+```
+
+### CRITICAL: Instruction Format
+
+**The latent editor learned to rely on explicit `+/-` signs in instructions.**
+
+| Instruction | Result |
+|-------------|--------|
+| `make leg1 +20mm longer` | ✓ Correct direction |
+| `make leg1 20mm longer` | ✗ WRONG direction (sign flipped) |
+| `change leg1 length by +20mm` | ✓ Correct direction |
+| `leg1 +20mm` | ✓ Correct direction |
+
+**Always use `+` for positive changes and `-` for negative changes in instructions.**
+
+This is a training data artifact — the model overfit to `+/-` tokens rather than learning "longer/shorter" semantics.
+
+### Inference Commands
+
+```bash
+# Full inference with latent editor
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "make leg1 +20mm longer" \
+    --seed 123
+
+# VAE-only mode (no LLM, for testing encoder/decoder)
+python scripts/infer_latent_editor.py \
+    --random-bracket \
+    --instruction "test" \
+    --vae-only
+
+# All defaults are set correctly for the transformer pipeline
+```
+
+### Latent Space Correlations
+
+The transformer VAE encodes leg1 changes in specific latent dimensions:
+
+| Dimension | Correlation with leg1_delta |
+|-----------|----------------------------|
+| dim 23 | r = -0.967 |
+| dim 27 | r = -0.965 |
+| dim 11 | r = +0.962 |
+| dim 25 | r = +0.961 |
+| dim 26 | r = +0.957 |
+
+For a +20mm leg1 change, expected delta_z:
+- `delta_z[11]`: ~+0.22 (positive)
+- `delta_z[23]`: ~-0.22 (negative)
+
+### Known Limitations
+
+1. **Leg-only editing**: Width/thickness not encoded in latent space (r < 0.16)
+2. **Instruction format sensitivity**: Must use explicit `+/-` signs
+3. **Entanglement**: Editing leg1 may cause spurious changes to leg2/width
+4. **Latent regressor accuracy**: ~2-3mm MAE for leg lengths, ~8mm for width
+
+### Latent Regressor vs Geometric Solver
+
+| Method | Accuracy | Speed | Notes |
+|--------|----------|-------|-------|
+| Latent Regressor | ~2-3mm MAE (legs) | Fast | Predicts from z directly |
+| Geometric Solver | Variable | Fast | Extracts from decoded features, can be lossy |
+
+The latent regressor is preferred when available (set as default in inference script).
