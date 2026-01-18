@@ -76,7 +76,27 @@ INSTRUCTION_DOMAIN = {
             "{name} -{amount}mm",
         ],
     },
+    "both_legs": {
+        "display_name": "both legs",
+        "magnitudes": [10, 20, 30],
+        "increase_templates": [
+            "make both legs +{amount}mm longer",
+            "extend both legs by +{amount}mm",
+        ],
+        "decrease_templates": [
+            "make both legs -{amount}mm shorter",
+            "shorten both legs by -{amount}mm",
+        ],
+    },
 }
+
+# No-op instructions (should produce zero or near-zero delta)
+NOOP_INSTRUCTIONS = [
+    "keep it the same",
+    "no changes",
+    "leave it unchanged",
+    "don't modify anything",
+]
 
 # Quick mode uses subset
 QUICK_DOMAIN = {
@@ -92,7 +112,15 @@ QUICK_DOMAIN = {
         "increase_templates": ["make {name} +{amount}mm longer"],
         "decrease_templates": ["make {name} -{amount}mm shorter"],
     },
+    "both_legs": {
+        "display_name": "both legs",
+        "magnitudes": [20],
+        "increase_templates": ["make both legs +{amount}mm longer"],
+        "decrease_templates": ["make both legs -{amount}mm shorter"],
+    },
 }
+
+QUICK_NOOP = ["keep it the same"]
 
 # Parameter names for latent regressor (4 core params)
 PARAM_NAMES = ["leg1_length", "leg2_length", "width", "thickness"]
@@ -488,6 +516,7 @@ def run_exploration(
     models: ModelBundle,
     brackets: list[dict],
     domain: dict,
+    noop_instructions: list[str],
     progress: bool = True,
 ) -> list[TrialResult]:
     """Run the full exploration across all brackets and instructions."""
@@ -496,6 +525,7 @@ def run_exploration(
     # Build trial list
     trials = []
     for bracket_idx, bracket_info in enumerate(brackets):
+        # Regular parameter changes
         for param_name, config in domain.items():
             for magnitude in config["magnitudes"]:
                 for direction in ["increase", "decrease"]:
@@ -510,6 +540,17 @@ def run_exploration(
                         "magnitude": magnitude,
                         "instruction": instruction,
                     })
+
+        # No-op instructions
+        for noop_inst in noop_instructions:
+            trials.append({
+                "bracket_idx": bracket_idx,
+                "bracket_info": bracket_info,
+                "param_name": "noop",
+                "direction": "none",
+                "magnitude": 0,
+                "instruction": noop_inst,
+            })
 
     print(f"\nRunning {len(trials)} trials across {len(brackets)} brackets...")
 
@@ -530,19 +571,54 @@ def run_exploration(
             direction = trial["direction"]
             magnitude = trial["magnitude"]
 
-            orig_val = inference_result["original_params"][param_name]
-            edit_val = inference_result["edited_params"][param_name]
-            actual_change = edit_val - orig_val
+            # Handle different instruction types
+            if param_name == "noop":
+                # For no-op, check that delta is near zero
+                actual_change = 0.0
+                for p in ["leg1_length", "leg2_length"]:
+                    actual_change += abs(
+                        inference_result["edited_params"][p] - inference_result["original_params"][p]
+                    )
+                # "Correct" if total change is < 5mm
+                correct_direction = actual_change < 5.0
+                target_pct = 100.0 if correct_direction else 0.0
 
-            # For direction correctness
-            expected_sign = 1 if direction == "increase" else -1
-            correct_direction = (actual_change * expected_sign) > 0
+            elif param_name == "both_legs":
+                # For both legs, check that both leg1 and leg2 change in correct direction
+                leg1_orig = inference_result["original_params"]["leg1_length"]
+                leg1_edit = inference_result["edited_params"]["leg1_length"]
+                leg2_orig = inference_result["original_params"]["leg2_length"]
+                leg2_edit = inference_result["edited_params"]["leg2_length"]
 
-            # Percentage of target achieved (signed)
-            if magnitude > 0:
-                target_pct = (actual_change * expected_sign / magnitude) * 100
+                leg1_change = leg1_edit - leg1_orig
+                leg2_change = leg2_edit - leg2_orig
+                actual_change = (leg1_change + leg2_change) / 2  # Average change
+
+                expected_sign = 1 if direction == "increase" else -1
+                leg1_correct = (leg1_change * expected_sign) > 0
+                leg2_correct = (leg2_change * expected_sign) > 0
+                correct_direction = leg1_correct and leg2_correct
+
+                if magnitude > 0:
+                    target_pct = (actual_change * expected_sign / magnitude) * 100
+                else:
+                    target_pct = 0.0
+
             else:
-                target_pct = 0.0
+                # Single parameter change
+                orig_val = inference_result["original_params"][param_name]
+                edit_val = inference_result["edited_params"][param_name]
+                actual_change = edit_val - orig_val
+
+                # For direction correctness
+                expected_sign = 1 if direction == "increase" else -1
+                correct_direction = (actual_change * expected_sign) > 0
+
+                # Percentage of target achieved (signed)
+                if magnitude > 0:
+                    target_pct = (actual_change * expected_sign / magnitude) * 100
+                else:
+                    target_pct = 0.0
 
             # Compute all param changes
             param_changes = {
@@ -742,8 +818,13 @@ def main():
         device = args.device
     print(f"Using device: {device}")
 
-    # Select domain
-    domain = QUICK_DOMAIN if args.quick else INSTRUCTION_DOMAIN
+    # Select domain and noop instructions
+    if args.quick:
+        domain = QUICK_DOMAIN
+        noop_instructions = QUICK_NOOP
+    else:
+        domain = INSTRUCTION_DOMAIN
+        noop_instructions = NOOP_INSTRUCTIONS
 
     # Create output directory
     output_path = Path(args.output)
@@ -769,11 +850,12 @@ def main():
     for param, config in domain.items():
         num_trials += len(config["magnitudes"]) * 2  # increase + decrease
     num_trials *= len(brackets)
+    num_trials += len(brackets) * len(noop_instructions)  # Add noop trials
     print(f"Expected trials: {num_trials}")
 
     # Run exploration
     explore_start = time.time()
-    results = run_exploration(models, brackets, domain)
+    results = run_exploration(models, brackets, domain, noop_instructions)
     explore_time = time.time() - explore_start
 
     # Compute summary
