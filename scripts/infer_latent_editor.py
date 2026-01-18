@@ -61,14 +61,60 @@ def parse_params(params_str: str) -> dict[str, float]:
 
 
 def load_vae(checkpoint_path: str, device: str):
-    """Load trained VAE model."""
-    from graph_cad.training.vae_trainer import load_checkpoint
+    """Load trained VAE model (supports both MLP and Transformer decoders)."""
+    import torch
 
     print(f"Loading VAE from {checkpoint_path}...")
-    vae, checkpoint = load_checkpoint(checkpoint_path, device=device)
-    vae.eval()
-    print(f"  VAE latent dim: {vae.config.latent_dim}")
-    return vae
+
+    # First, peek at checkpoint to determine VAE type
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+
+    # Check if this is a TransformerGraphVAE (has decoder_config key)
+    if "decoder_config" in checkpoint:
+        # TransformerGraphVAE
+        from graph_cad.models.graph_vae import VariableGraphVAEConfig, VariableGraphVAEEncoder
+        from graph_cad.models.transformer_decoder import TransformerDecoderConfig, TransformerGraphVAE
+
+        encoder_config = VariableGraphVAEConfig(**checkpoint["encoder_config"])
+        encoder = VariableGraphVAEEncoder(encoder_config)
+
+        decoder_config = TransformerDecoderConfig(**checkpoint["decoder_config"])
+
+        # Check for param_head settings
+        use_param_head = checkpoint.get("use_param_head", False)
+        num_params = checkpoint.get("num_params", 4)
+
+        vae = TransformerGraphVAE(
+            encoder, decoder_config,
+            use_param_head=use_param_head,
+            num_params=num_params,
+        )
+        vae.load_state_dict(checkpoint["model_state_dict"])
+        vae.to(device)
+        vae.eval()
+
+        print(f"  VAE type: TransformerGraphVAE")
+        print(f"  Latent dim: {decoder_config.latent_dim}")
+        print(f"  Epoch: {checkpoint.get('epoch', 'unknown')}")
+        return vae, "transformer"
+
+    else:
+        # MLP decoder VAE (VariableGraphVAE or GraphVAE)
+        from graph_cad.training.vae_trainer import load_checkpoint
+
+        vae, ckpt = load_checkpoint(checkpoint_path, device=device)
+        vae.eval()
+
+        # Determine if it's variable or fixed topology
+        if hasattr(vae.config, "num_face_types"):
+            vae_type = "variable_mlp"
+            print(f"  VAE type: VariableGraphVAE (MLP decoder)")
+        else:
+            vae_type = "fixed"
+            print(f"  VAE type: GraphVAE (fixed topology)")
+
+        print(f"  Latent dim: {vae.config.latent_dim}")
+        return vae, vae_type
 
 
 def load_feature_regressor(checkpoint_path: str, device: str):
@@ -354,10 +400,19 @@ def graph_to_tensor(graph, device: str) -> dict:
     return result
 
 
-def encode_graph(vae, graph, device: str) -> torch.Tensor:
+def encode_graph(vae, graph, device: str, vae_type: str = "transformer") -> torch.Tensor:
     """Encode a BRepGraph to latent vector using VAE.
 
-    For VariableGraphVAE, pads inputs to max_nodes/max_edges to match training.
+    For variable topology VAEs (Transformer or MLP), pads inputs to max_nodes/max_edges.
+
+    Args:
+        vae: VAE model (TransformerGraphVAE, VariableGraphVAE, or GraphVAE)
+        graph: BRepGraph to encode
+        device: Device for tensors
+        vae_type: One of "transformer", "variable_mlp", or "fixed"
+
+    Returns:
+        Latent vector z (1, latent_dim)
     """
     tensors = graph_to_tensor(graph, device)
     x = tensors["x"]
@@ -365,9 +420,51 @@ def encode_graph(vae, graph, device: str) -> torch.Tensor:
     edge_attr = tensors["edge_attr"]
 
     with torch.no_grad():
-        # Check if this is a VariableGraphVAE (has face_types in config)
-        if hasattr(vae.config, "num_face_types"):
-            # VariableGraphVAE requires face_types and padding to match training
+        if vae_type == "transformer":
+            # TransformerGraphVAE
+            face_types = tensors.get("face_types")
+            if face_types is None:
+                raise ValueError(
+                    "TransformerGraphVAE requires face_types. "
+                    "Use extract_graph_from_solid_variable() to extract the graph."
+                )
+
+            # Get max sizes from decoder config
+            max_nodes = vae.decoder_config.max_nodes
+            max_edges = 50  # Standard max edges
+            num_nodes = x.shape[0]
+            num_edges = edge_attr.shape[0]
+
+            # Pad node features
+            x_padded = torch.zeros(max_nodes, x.shape[1], device=device)
+            x_padded[:num_nodes] = x
+
+            # Pad face types
+            face_types_padded = torch.zeros(max_nodes, dtype=torch.long, device=device)
+            face_types_padded[:num_nodes] = face_types
+
+            # Create node mask
+            node_mask = torch.zeros(max_nodes, device=device)
+            node_mask[:num_nodes] = 1.0
+
+            # Pad edge features
+            edge_attr_padded = torch.zeros(max_edges, edge_attr.shape[1], device=device)
+            edge_attr_padded[:num_edges] = edge_attr
+
+            # Pad edge index
+            edge_index_padded = torch.zeros(2, max_edges, dtype=torch.long, device=device)
+            edge_index_padded[:, :num_edges] = edge_index
+
+            # Create batch tensor for single graph
+            batch = torch.zeros(max_nodes, dtype=torch.long, device=device)
+
+            mu, logvar = vae.encode(
+                x_padded, face_types_padded, edge_index_padded, edge_attr_padded,
+                batch=batch, node_mask=node_mask
+            )
+
+        elif vae_type == "variable_mlp":
+            # VariableGraphVAE (MLP decoder)
             face_types = tensors.get("face_types")
             if face_types is None:
                 raise ValueError(
@@ -397,7 +494,7 @@ def encode_graph(vae, graph, device: str) -> torch.Tensor:
             edge_attr_padded = torch.zeros(max_edges, edge_attr.shape[1], device=device)
             edge_attr_padded[:num_edges] = edge_attr
 
-            # Pad edge index (add self-loops for padding)
+            # Pad edge index
             edge_index_padded = torch.zeros(2, max_edges, dtype=torch.long, device=device)
             edge_index_padded[:, :num_edges] = edge_index
 
@@ -405,30 +502,67 @@ def encode_graph(vae, graph, device: str) -> torch.Tensor:
                 x_padded, face_types_padded, edge_index_padded, edge_attr_padded,
                 batch=None, node_mask=node_mask
             )
+
         else:
             # GraphVAE (fixed topology)
             mu, logvar = vae.encode(x, edge_index, edge_attr, batch=None)
+
         # Use mean (deterministic) in inference mode
         z = mu
 
     return z
 
 
-def decode_latent(vae, z: torch.Tensor) -> dict:
+def decode_latent(vae, z: torch.Tensor, vae_type: str = "transformer") -> dict:
     """Decode latent vector to graph features.
+
+    Args:
+        vae: VAE model
+        z: Latent vector (1, latent_dim)
+        vae_type: One of "transformer", "variable_mlp", or "fixed"
 
     Returns dict with:
         - node_features: (num_nodes, node_dim) numpy array
         - edge_features: (num_edges, edge_dim) numpy array
-        - face_types: (num_nodes,) numpy array (for VariableGraphVAE)
-        - node_mask: (num_nodes,) numpy array (for VariableGraphVAE)
+        - face_types: (num_nodes,) numpy array (for variable topology)
+        - node_mask: (num_nodes,) numpy array (for variable topology)
+        - edge_logits: (num_nodes, num_nodes) numpy array (for transformer only)
     """
     with torch.no_grad():
         output = vae.decode(z)
 
-    # Handle both dict output (VariableGraphVAE) and tuple output (GraphVAE)
-    if isinstance(output, dict):
-        # VariableGraphVAE returns dict with logits
+    if vae_type == "transformer":
+        # TransformerGraphVAE returns dict with:
+        # - node_features: (batch, max_nodes, 13)
+        # - face_type_logits: (batch, max_nodes, 3)
+        # - existence_logits: (batch, max_nodes)
+        # - edge_logits: (batch, max_nodes, max_nodes)
+        node_features = output["node_features"].cpu().numpy()[0]
+
+        # Convert existence logits to mask
+        node_mask = (torch.sigmoid(output["existence_logits"]) > 0.5).cpu().numpy()[0]
+
+        # Convert face type logits to predictions
+        face_types = output["face_type_logits"].argmax(dim=-1).cpu().numpy()[0]
+
+        # Edge logits for adjacency prediction
+        edge_logits = output["edge_logits"].cpu().numpy()[0]
+
+        # For edge features, we don't have direct reconstruction from transformer
+        # Create placeholder edge features based on predicted adjacency
+        num_nodes = int(node_mask.sum())
+        edge_features = np.zeros((0, 2), dtype=np.float32)  # Placeholder
+
+        return {
+            "node_features": node_features,
+            "edge_features": edge_features,
+            "face_types": face_types,
+            "node_mask": node_mask,
+            "edge_logits": edge_logits,
+        }
+
+    elif vae_type == "variable_mlp":
+        # VariableGraphVAE (MLP decoder) returns dict with logits
         node_features = output["node_features"].cpu().numpy()[0]
         edge_features = output["edge_features"].cpu().numpy()[0]
 
@@ -442,8 +576,9 @@ def decode_latent(vae, z: torch.Tensor) -> dict:
             "face_types": face_types,
             "node_mask": node_mask,
         }
+
     else:
-        # GraphVAE returns tuple (node_recon, edge_recon)
+        # GraphVAE (fixed topology) returns tuple (node_recon, edge_recon)
         node_recon, edge_recon = output
         return {
             "node_features": node_recon.cpu().numpy()[0],
@@ -563,8 +698,8 @@ def main():
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_16d_lowbeta/best_model.pt",
-        help="Path to trained VAE checkpoint",
+        default="outputs/vae_transformer/best_model.pt",
+        help="Path to trained VAE checkpoint (supports Transformer VAE and MLP VAE)",
     )
     parser.add_argument(
         "--editor-checkpoint",
@@ -682,13 +817,16 @@ def main():
     from graph_cad.data.l_bracket import VariableLBracket
 
     # Load VAE first to determine which graph extraction to use
-    vae = load_vae(args.vae_checkpoint, device)
-    use_variable_topology = hasattr(vae.config, "num_face_types")
+    vae, vae_type = load_vae(args.vae_checkpoint, device)
+
+    # Determine topology type based on VAE type
+    use_variable_topology = vae_type in ("transformer", "variable_mlp")
+    use_transformer_vae = vae_type == "transformer"
 
     if use_variable_topology:
-        print("  VAE type: VariableGraphVAE (13D features)")
+        print("  Graph extraction: Variable topology (13D features)")
     else:
-        print("  VAE type: GraphVAE (8D features)")
+        print("  Graph extraction: Fixed topology (8D features)")
 
     if args.input:
         print(f"Loading STEP file: {args.input}")
@@ -750,8 +888,13 @@ def main():
 
     editor = None
     if not args.vae_only:
+        # Get correct config based on VAE type
+        if use_transformer_vae:
+            vae_config = vae.decoder_config
+        else:
+            vae_config = vae.config
         editor, editor_checkpoint = load_editor(
-            args.editor_checkpoint, vae.config, device, force_cpu=args.force_cpu
+            args.editor_checkpoint, vae_config, device, force_cpu=args.force_cpu
         )
     else:
         print("  Skipping LLM loading (--vae-only mode)")
@@ -763,12 +906,12 @@ def main():
     print("STEP 3: Encoding Original Graph")
     print("=" * 60)
 
-    z_src = encode_graph(vae, graph, device)
+    z_src = encode_graph(vae, graph, device, vae_type=vae_type)
     print(f"  Encoded to latent: z ∈ ℝ^{z_src.shape[-1]}")
     print(f"  ‖z‖ = {z_src.norm().item():.4f}")
 
     # Decode to verify reconstruction
-    orig_decoded = decode_latent(vae, z_src)
+    orig_decoded = decode_latent(vae, z_src, vae_type=vae_type)
     orig_node_recon = orig_decoded["node_features"]
     orig_edge_recon = orig_decoded["edge_features"]
     print(f"  Reconstruction check: node_shape={orig_node_recon.shape}, edge_shape={orig_edge_recon.shape}")
@@ -849,7 +992,7 @@ def main():
     print("STEP 5: Decoding Edited Latent")
     print("=" * 60)
 
-    edit_decoded = decode_latent(vae, z_edited)
+    edit_decoded = decode_latent(vae, z_edited, vae_type=vae_type)
     edit_node_recon = edit_decoded["node_features"]
     edit_edge_recon = edit_decoded["edge_features"]
     print(f"  Decoded graph: node_shape={edit_node_recon.shape}, edge_shape={edit_edge_recon.shape}")
