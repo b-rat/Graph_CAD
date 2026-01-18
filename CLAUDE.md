@@ -417,3 +417,52 @@ For a +20mm leg1 change, expected delta_z:
 | Geometric Solver | Variable | Fast | Extracts from decoded features, can be lossy |
 
 The latent regressor is preferred when available (set as default in inference script).
+
+### Exploration Study Results (50 brackets, 1300 trials)
+
+Results from `outputs/exploration/full_study_260117.json`:
+
+**Direction Accuracy:**
+
+| Parameter | Correct Direction | Notes |
+|-----------|-------------------|-------|
+| leg1_length | **100%** | Perfect |
+| leg2_length | **100%** | Perfect |
+| both_legs | **98.7%** | Near-perfect |
+| noop | **17.5%** | Fails to hold still |
+
+**Magnitude Scaling (target achievement):**
+
+| Magnitude | leg1 | leg2 | Notes |
+|-----------|------|------|-------|
+| 10mm | 93% | 105% | Good |
+| 20mm | 87% | 94% | Good |
+| 30mm | 91% | 96% | Good |
+| 50mm | 75% | 78% | Undershoots on large requests |
+
+**Cross-talk (Entanglement):**
+
+When editing one parameter, others change unintentionally:
+- Editing leg1 → leg2 changes by ~3.6mm
+- Editing leg1 → width changes by ~5.7mm
+- Thickness is stable (~0.2mm)
+
+**No-op Problem:**
+
+The model doesn't understand "no change" instructions:
+- "keep it the same" → 11.2mm change, 0% correct
+- "don't modify anything" → 7.0mm change, 38% correct (best)
+- Model produces non-zero deltas (0.16-0.26 norm) for all no-op instructions
+
+**Both Legs Asymmetry:**
+
+When requesting both legs change together:
+- leg1 average change: 0.2mm
+- leg2 average change: 2.4mm
+- Model favors leg2 over leg1
+
+**Summary:**
+- Excellent at direction (100% for single legs)
+- Good at magnitude (75-95% of target)
+- Struggles with no-op (produces changes when it shouldn't)
+- Has entanglement (editing one param affects others)
