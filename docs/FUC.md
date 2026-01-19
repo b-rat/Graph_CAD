@@ -20,20 +20,25 @@ git config user.name "b-rat"
 git pull
 git lfs pull
 
+apt-get update && apt-get install -y git-lfs && git lfs install
+
+apt update && apt install tmux -y
+
 pip install -r requirements-cloud-gpu.txt && pip install -e . && pip install hf_transfer && \
 echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc && \
 source ~/.bashrc && \
 apt-get update && apt-get install -y libxrender1 libxext6 && \
-apt update && apt install tmux -y && \
-tmux set -g history-limit 50000 && \
-tmux set -g mouse on && \
-
+apt update && apt install nano && \
 apt install jq
 
-apt-get update && apt-get install -y git-lfs && git lfs install
+nano ~/.tmux.conf # Create/edit it
+cat ~/.tmux.conf # Or check if it exists
+set -g history-limit 50000 # within .tmux.conf
+set -g mouse on # within tmux or .tmux.conf
 
 jq . filename.json # to view file
 jq 'length' filename.json # count items in the file
+
 git add -f outputs/latent_editor/best_model.pt
 git add -f outputs/latent_editor/training_results.json
 git commit -m "Add trained latent editor checkpoint"
@@ -42,6 +47,18 @@ git reset                   #unstage everything add file name to unstage single 
 git reset --soft HEAD~1     #keep changes staged remove commit one commit back
 git reset HEAD~1            #remove commit and unstage
 ```
+
+```bash
+# to set up ssh config for runpod
+nano ~/.ssh/config
+
+Host runpod
+    HostName 194.68.245.2   # get info from runpod instance
+    Port 22079              # get info from runpod instance
+    User root
+    IdentityFile ~/.ssh/id_ed25519
+```
+
 
 ```bash
 python scripts/train_latent_editor.py \
@@ -589,4 +606,64 @@ python scripts/infer_latent_editor.py \
 
 ```bash
 python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
+```
+
+```bash
+python scripts/train_transformer_vae.py \
+    --aux-weight 1.0 --epochs 100 \
+    --output-dir outputs/vae_transformer_aux2
+```
+
+```bash
+python scripts/train_transformer_vae.py  \
+    --aux-weight 0.1 --epochs 100 \
+    --output-dir outputs/vae_transformer_corr
+
+# aux weight 1.0 collapsed dimensions
+```
+
+```bash
+python scripts/generate_edit_data_transformer.py \
+    --vae-checkpoint outputs/vae_transformer_aux2_w100/best_model.pt \
+    --num-samples 10000 \
+    --output data/edit_data_legs \
+&& TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_legs \
+    --epochs 10 \
+    --output-dir outputs/latent_editor_tvae
+```
+
+```bash
+TOKENIZERS_PARALLELISM=false python scripts/train_latent_editor.py \
+    --data-dir data/edit_data_legs \
+    --epochs 20 \
+    --output-dir outputs/latent_editor_tvae \
+    --resume outputs/latent_editor_tvae/checkpoint_epoch_10.pt
+```
+
+```bash
+python scripts/infer_latent_editor.py \
+    --random-bracket --seed $RANDOM \
+    --editor-checkpoint outputs/latent_editor_tvae/best_model.pt \
+    --vae-checkpoint outputs/vae_transformer_aux2_w100/best_model.pt \
+    --output-dir outputs/inference_test_tvae \
+    --instruction "make leg1 +20mm longer"
+```
+
+
+```bash
+python scripts/train_latent_regressor.py \
+    --vae-checkpoint outputs/vae_transformer_aux2_w100/best_model.pt \
+    --train-size 10000 \
+    --val-size 1000 \
+    --test-size 1000 \
+    --epochs 100 \
+    --output-dir outputs/latent_regressor_tvae
+```
+
+```bash
+python scripts/explore_instruction_domain.py --num-brackets 10
+
+python scripts/explore_instruction_domain.py --num-brackets 50 \
+    --output outputs/exploration/full_study_260117.json
 ```

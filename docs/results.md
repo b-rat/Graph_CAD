@@ -1119,3 +1119,46 @@ INFERENCE COMPLETE
   hole1_diameter             7.77       7.83      +0.06
   hole2_distance            61.20      59.69      -1.51
   hole2_diameter             7.11       7.00      -0.11
+
+_______________
+## Transformer VAE results: 
+
+Transformer VAE
+==================================================
+Parameter correlations with latent dimensions:
+==================================================
+leg1        : r = 0.988 (best dim: 27)
+leg2        : r = 0.983 (best dim: 26)
+width       : r = 0.063 (best dim: 7)
+thickness   : r = 0.107 (best dim: 31)
+==================================================
+
+Tranformer VAE aux
+==================================================
+Parameter correlations with latent dimensions:
+==================================================
+leg1        : r = 0.988 (best dim: 14)
+leg2        : r = 0.989 (best dim: 6)
+width       : r = 0.252 (best dim: 1)
+thickness   : r = 0.109 (best dim: 31)
+==================================================
+
+Tranformer VAE aux2
+==================================================
+Parameter correlations with latent dimensions:
+==================================================
+leg1        : r = 0.980 (best dim: 23)
+leg2        : r = 0.990 (best dim: 28)
+width       : r = 0.074 (best dim: 9)
+thickness   : r = 0.107 (best dim: 23)
+==================================================
+
+Transformer VAE aux2 weight 100
+==================================================
+Parameter correlations with latent dimensions:
+==================================================
+leg1        : r = 0.987 (best dim: 23)
+leg2        : r = 0.990 (best dim: 28)
+width       : r = 0.057 (best dim: 12)
+thickness   : r = 0.107 (best dim: 5)
+==================================================
