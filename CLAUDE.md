@@ -47,11 +47,14 @@ ssh runpod
 # Sync code changes before running
 git pull  # on RunPod, after pushing from local
 
-# Example: run training on RunPod
-ssh runpod "cd /workspace/Graph_CAD && python scripts/train_transformer_vae.py --epochs 100"
+# For long-running tasks, use tmux to survive disconnections
+ssh runpod
+tmux new -s train  # or tmux attach -t train to reconnect
+cd /workspace/Graph_CAD && python scripts/train_transformer_vae.py --epochs 100
+# Ctrl+B, D to detach; tmux attach -t train to reconnect later
 
-# Example: run exploration study
-ssh runpod "cd /workspace/Graph_CAD && python scripts/explore_instruction_domain.py --num-brackets 50"
+# Quick one-off commands can run directly
+ssh runpod "cd /workspace/Graph_CAD && python scripts/explore_instruction_domain.py --num-brackets 10"
 ```
 
 The local machine (MPS) is too slow for LLM inference. Always use RunPod for:
