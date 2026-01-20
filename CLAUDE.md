@@ -78,7 +78,8 @@ The local machine (MPS) is too slow for LLM inference. Always use RunPod for:
 |-------|--------|--------|
 | 1. Fixed Topology PoC | Complete | 80.2% direction accuracy |
 | 2. Variable Topology (MLP Decoder) | Complete | 64% ceiling (architectural limitation) |
-| **3. DETR Transformer Decoder** | **In Progress** | 100% face/edge accuracy, aux head added |
+| 3. DETR Transformer Decoder | Complete | 100% face/edge accuracy, leg1/leg2 r>0.98 |
+| **3b. Attention Pooling** | **In Progress** | Testing width/thickness encoding fix |
 
 **Documentation:**
 - `docs/phase2_mlp_decoder_report.md` — Root cause analysis
@@ -125,9 +126,29 @@ Replace MLP decoder with permutation-invariant transformer to break the 64% ceil
 | width | r = 0.155 | ✗ Poor |
 | thickness | r = 0.102 | ✗ Poor |
 
-**Root Cause: Geometric Dominance**
+**Root Cause: Symmetric Cancellation in Mean Pooling**
 
-Reconstruction loss is dominated by leg lengths (they affect many faces' areas, centroids, edges). Width and thickness have smaller geometric footprints, so the encoder ignores them — it achieves low reconstruction loss without encoding them.
+The encoder uses **global mean pooling** after GAT layers. This loses width/thickness information due to the L-bracket's geometry:
+
+**Why leg lengths survive pooling:**
+- L-shape is asymmetric in X and Z directions
+- When leg1 extends, faces shift in one direction (not balanced)
+- The mean centroid shifts detectably
+
+**Why width/thickness cancel out:**
+- Width changes are symmetric in Y direction
+- Y=0 face shifts -y, Y=width face shifts +y
+- After bbox_center normalization: equal and opposite centroids
+- Mean pooling: `(-Δ + Δ) / 2 = 0` — signal lost!
+
+```
+Width change example:
+  Y=0 face centroid:     (0 - width/2) / diagonal = -0.14
+  Y=width face centroid: (width - width/2) / diagonal = +0.14
+  Mean: cancels to ~0 regardless of width!
+```
+
+The encoder has the information (individual face positions), but mean pooling destroys it before reaching the latent space.
 
 ### Attempted Solutions
 
@@ -153,7 +174,36 @@ z (latent) → param_head (MLP) → predicted [leg1, leg2, width, thickness]
 - Encoder learns what decoder needs (leg lengths), ignores aux head signal
 - param_head can only predict what's already in latent space
 
-### Next Steps to Try
+### Current Experiment: Multi-Head Attention Pooling
+
+**Hypothesis:** Replace mean pooling with learned attention pooling to break symmetric cancellation.
+
+**Implementation:** `MultiHeadAttentionPooling` class in `graph_cad/models/graph_vae.py`
+
+```python
+# 4 attention heads, each learns different weights over faces
+# Head 1 might attend to left faces → captures width
+# Head 2 might attend to leg1 end → captures leg1 length
+# etc.
+
+python scripts/train_transformer_vae.py \
+    --pooling-type attention \
+    --attention-heads 4 \
+    --output-dir outputs/vae_transformer_attn_pool
+```
+
+**Why this should work:**
+- Attention can learn to weight Y=0 face higher than Y=width face
+- Breaks the symmetric cancellation: `0.7×(-Δ) + 0.3×(+Δ) = -0.4Δ` (signal preserved!)
+- Each head can specialize for different parameters
+
+**Training Status:** Running on RunPod (`tmux attach -t train`)
+- Epoch 26/100, 100% face/edge accuracy, 32/32 active dims
+- Checkpoint: `outputs/vae_transformer_attn_pool/`
+
+**Estimated probability of success:** 65-75% (directly addresses root cause)
+
+### Alternative Approaches (If Attention Pooling Fails)
 
 **Option A: Direct Latent Supervision**
 Force first 4 latent dims to equal normalized parameters:
@@ -202,22 +252,24 @@ Learned Queries (20 × 256) ─→ [Transformer Decoder × 4 layers]
 | File | Description |
 |------|-------------|
 | `graph_cad/models/transformer_decoder.py` | TransformerGraphDecoder, TransformerGraphVAE |
+| `graph_cad/models/graph_vae.py` | GAT encoder + **MultiHeadAttentionPooling** |
 | `graph_cad/models/losses.py` | Hungarian matching loss functions (added ~400 lines) |
-| `scripts/train_transformer_vae.py` | Training script for Phase 3 |
-| `tests/test_transformer_decoder.py` | 16 unit tests (all passing) |
+| `scripts/train_transformer_vae.py` | Training script (supports `--pooling-type attention`) |
+| `tests/test_transformer_decoder.py` | 24 unit tests (all passing) |
 
 ### Training Commands
 
 ```bash
-# Basic training (without aux head)
+# Basic training with mean pooling (default)
 python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
+
+# Training with ATTENTION POOLING (current experiment)
+python scripts/train_transformer_vae.py --epochs 100 \
+    --pooling-type attention --attention-heads 4 \
+    --output-dir outputs/vae_transformer_attn_pool
 
 # Training with auxiliary parameter head
 python scripts/train_transformer_vae.py --epochs 100 --aux-weight 0.1 --aux-loss-type correlation
-
-# Alternative loss types
-python scripts/train_transformer_vae.py --aux-weight 1.0 --aux-loss-type mse
-python scripts/train_transformer_vae.py --aux-weight 100.0 --aux-loss-type mse_normalized
 
 # Test parameter correlations after training
 python scripts/test_tvae.py outputs/vae_transformer/best_model.pt
@@ -228,9 +280,13 @@ python scripts/test_tvae.py outputs/vae_transformer/best_model.pt
 | Parameter | Value |
 |-----------|-------|
 | Latent dim | 32 |
+| Encoder GAT layers | 3 |
+| Encoder hidden dim | 64 |
+| **Pooling type** | mean (options: mean, **attention**) |
+| **Attention heads** | 4 (for attention pooling) |
 | Decoder hidden dim | 256 |
 | Decoder layers | 4 |
-| Attention heads | 8 |
+| Decoder attention heads | 8 |
 | Max nodes | 20 |
 | Learning rate | 1e-4 |
 | Beta (KL weight) | 0.1 (with 30% warmup) |
@@ -257,7 +313,7 @@ python scripts/test_tvae.py outputs/vae_transformer/best_model.pt
 | Face type accuracy | ~85% | 100% ✓ | >95% |
 | Edge prediction accuracy | N/A | 100% ✓ | >90% |
 
-**Blocker:** Aux head approach insufficient. Need direct latent supervision or two-phase training.
+**Current approach:** Multi-head attention pooling (training in progress on RunPod).
 
 ---
 
@@ -272,11 +328,15 @@ class VariableGraphVAEEncoder(nn.Module):
 
     # Uses:
     # - Face type embeddings (PLANAR=0, HOLE=1, FILLET=2)
-    # - GAT layers with message passing
-    # - Masked global mean pooling
+    # - 3 GAT layers with message passing (64D hidden)
+    # - Pooling: mean (default) or attention (4 heads)
 ```
 
-**Location:** `graph_cad/models/graph_vae.py` lines 406-535
+**Pooling options:**
+- `pooling_type="mean"`: Global mean pooling (loses symmetric info)
+- `pooling_type="attention"`: Multi-head attention pooling (preserves symmetric info)
+
+**Location:** `graph_cad/models/graph_vae.py`
 
 ### Node Features (13D) — Decoder Output Spec
 
@@ -343,14 +403,15 @@ Topology: 6-15 faces depending on holes/fillet.
 
 | Checkpoint | Description |
 |------------|-------------|
-| `outputs/vae_transformer_aux2_w100/best_model.pt` | **Current best** Transformer VAE with aux head (leg1/leg2 r>0.98) |
+| `outputs/vae_transformer_attn_pool/best_model.pt` | **IN TRAINING** Attention pooling experiment |
+| `outputs/vae_transformer_aux2_w100/best_model.pt` | Transformer VAE with aux head (leg1/leg2 r>0.98) |
 | `outputs/latent_editor_tvae/best_model.pt` | Latent editor for leg length operations |
 | `outputs/latent_regressor_tvae/best_model.pt` | z → params regressor (2-3mm MAE for legs) |
 | `outputs/vae_variable_v4/best_model.pt` | Phase 2 VAE v4 with collapse fix (32/32 active dims) |
 | `outputs/vae_aux/best_model.pt` | Phase 1 fixed topology VAE (80.2% direction accuracy) |
 | `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (no aux head) |
 
-**Note:** Current aux head approach insufficient for width/thickness. Need architectural change.
+**Current experiment:** Attention pooling to address width/thickness encoding via symmetric cancellation fix.
 
 ---
 
