@@ -397,6 +397,11 @@ def main():
     parser.add_argument("--num-gat-heads", type=int, default=4, help="GAT attention heads")
     parser.add_argument("--face-embed-dim", type=int, default=8, help="Face type embedding dim")
     parser.add_argument("--encoder-dropout", type=float, default=0.1, help="Encoder dropout")
+    parser.add_argument("--pooling-type", type=str, default="mean",
+                        choices=["mean", "attention"],
+                        help="Pooling type: mean (default) or attention (multi-head)")
+    parser.add_argument("--attention-heads", type=int, default=4,
+                        help="Number of attention heads for attention pooling")
 
     # Decoder arguments (Transformer decoder - new in Phase 3)
     parser.add_argument("--decoder-hidden-dim", type=int, default=256, help="Decoder hidden dimension")
@@ -493,6 +498,8 @@ def main():
         num_heads=args.num_gat_heads,
         latent_dim=args.latent_dim,
         encoder_dropout=args.encoder_dropout,
+        pooling_type=args.pooling_type,
+        attention_heads=args.attention_heads,
     )
 
     # Create decoder config
@@ -527,6 +534,10 @@ def main():
     print(f"  Decoder params: {decoder_params:,}")
     print(f"  Total params:   {total_params:,}")
     print(f"\n  Encoder: GAT ({args.num_gat_layers} layers, {args.encoder_hidden_dim}D)")
+    pooling_info = f"{args.pooling_type}"
+    if args.pooling_type == "attention":
+        pooling_info += f" ({args.attention_heads} heads)"
+    print(f"  Pooling: {pooling_info}")
     print(f"  Decoder: Transformer ({args.num_decoder_layers} layers, {args.decoder_hidden_dim}D)")
     print(f"  Latent dim: {args.latent_dim}")
 

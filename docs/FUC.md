@@ -31,6 +31,9 @@ apt-get update && apt-get install -y libxrender1 libxext6 && \
 apt update && apt install nano && \
 apt install jq
 
+echo 'export LS_COLORS="$LS_COLORS:ow=1;34:tw=1;34"' >> ~/.bashrc && \
+source ~/.bashrc
+
 nano ~/.tmux.conf # Create/edit it
 cat ~/.tmux.conf # Or check if it exists
 set -g history-limit 50000 # within .tmux.conf

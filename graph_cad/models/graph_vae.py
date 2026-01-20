@@ -391,6 +391,10 @@ class VariableGraphVAEConfig:
     num_heads: int = 4
     encoder_dropout: float = 0.1
 
+    # Pooling configuration
+    pooling_type: str = "mean"  # "mean" or "attention"
+    attention_heads: int = 4  # Number of attention heads for attention pooling
+
     # Latent space (larger for variable topology)
     latent_dim: int = 32
 
@@ -403,6 +407,133 @@ class VariableGraphVAEConfig:
     use_param_head: bool = False
 
 
+class MultiHeadAttentionPooling(nn.Module):
+    """
+    Multi-head attention pooling for graph-level representations.
+
+    Instead of simple mean pooling (which can lose symmetric information),
+    this learns K different attention patterns over nodes. Each head can
+    specialize to capture different aspects of the geometry.
+
+    For example:
+    - Head 1 might attend more to left-side faces → captures width
+    - Head 2 might attend to leg1 end faces → captures leg1 length
+    - Head 3 might attend to top/bottom faces → captures thickness
+
+    This breaks the symmetry that causes mean pooling to lose width/thickness
+    information in L-brackets.
+
+    Args:
+        hidden_dim: Dimension of node embeddings.
+        output_dim: Total output dimension (divided among heads).
+        num_heads: Number of attention heads.
+    """
+
+    def __init__(self, hidden_dim: int, output_dim: int, num_heads: int = 4):
+        super().__init__()
+        self.hidden_dim = hidden_dim
+        self.output_dim = output_dim
+        self.num_heads = num_heads
+        self.head_dim = output_dim // num_heads
+
+        assert output_dim % num_heads == 0, (
+            f"output_dim ({output_dim}) must be divisible by num_heads ({num_heads})"
+        )
+
+        # Each head has its own attention mechanism
+        self.attention_heads = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim),
+                nn.Tanh(),
+                nn.Linear(hidden_dim, 1),
+            )
+            for _ in range(num_heads)
+        ])
+
+        # Each head projects to its portion of the output
+        self.head_projections = nn.ModuleList([
+            nn.Linear(hidden_dim, self.head_dim)
+            for _ in range(num_heads)
+        ])
+
+    def forward(
+        self,
+        h: torch.Tensor,
+        batch: torch.Tensor | None = None,
+        node_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """
+        Apply multi-head attention pooling.
+
+        Args:
+            h: Node embeddings, shape (num_nodes, hidden_dim).
+            batch: Batch assignment for nodes, shape (num_nodes,).
+            node_mask: Mask for valid nodes (1=real, 0=padding), shape (num_nodes,).
+
+        Returns:
+            Pooled representation, shape (batch_size, output_dim).
+        """
+        head_outputs = []
+
+        for attn_head, proj_head in zip(self.attention_heads, self.head_projections):
+            # Compute attention scores
+            scores = attn_head(h)  # (num_nodes, 1)
+
+            # Apply node mask to scores (set padding to -inf before softmax)
+            if node_mask is not None:
+                mask = node_mask.unsqueeze(-1)  # (num_nodes, 1)
+                scores = scores.masked_fill(mask == 0, float('-inf'))
+
+            # Softmax over nodes within each graph
+            if batch is None:
+                # Single graph
+                weights = torch.softmax(scores, dim=0)  # (num_nodes, 1)
+                pooled = (weights * h).sum(dim=0, keepdim=True)  # (1, hidden_dim)
+            else:
+                # Batched graphs - need per-graph softmax
+                # Use scatter_softmax equivalent
+                num_graphs = batch.max().item() + 1
+
+                # Compute softmax per graph using the log-sum-exp trick
+                # First, get max per graph for numerical stability
+                max_scores = torch.zeros(num_graphs, 1, device=h.device, dtype=h.dtype)
+                max_scores.fill_(float('-inf'))
+                max_scores.scatter_reduce_(
+                    0,
+                    batch.unsqueeze(-1),
+                    scores,
+                    reduce='amax',
+                    include_self=False,
+                )
+
+                # Subtract max and exp
+                scores_shifted = scores - max_scores[batch]
+                exp_scores = torch.exp(scores_shifted)
+
+                # Handle masked nodes (they have -inf scores, so exp = 0)
+                if node_mask is not None:
+                    exp_scores = exp_scores * node_mask.unsqueeze(-1)
+
+                # Sum exp per graph
+                sum_exp = torch.zeros(num_graphs, 1, device=h.device, dtype=h.dtype)
+                sum_exp.scatter_add_(0, batch.unsqueeze(-1), exp_scores)
+
+                # Normalize to get weights
+                weights = exp_scores / sum_exp[batch].clamp(min=1e-10)
+
+                # Weighted sum per graph
+                weighted_h = weights * h  # (num_nodes, hidden_dim)
+                pooled = torch.zeros(num_graphs, h.shape[-1], device=h.device, dtype=h.dtype)
+                pooled.scatter_add_(0, batch.unsqueeze(-1).expand_as(weighted_h), weighted_h)
+
+            # Project to head dimension
+            head_output = proj_head(pooled)  # (batch_size, head_dim)
+            head_outputs.append(head_output)
+
+        # Concatenate all heads
+        return torch.cat(head_outputs, dim=-1)  # (batch_size, output_dim)
+
+
 class VariableGraphVAEEncoder(nn.Module):
     """
     Encoder for variable topology graphs with face type embeddings.
@@ -413,8 +544,15 @@ class VariableGraphVAEEncoder(nn.Module):
         3. Node embedding (Linear -> ReLU -> Dropout)
         4. Edge embedding (Linear -> ReLU)
         5. GAT layers with edge attributes
-        6. Global mean pooling
+        6. Pooling: mean pooling OR multi-head attention pooling
         7. Dual heads: mu_head, logvar_head
+
+    Pooling Options:
+        - "mean": Global mean pooling (default). Can lose symmetric information
+          like width/thickness in L-brackets due to centroid cancellation.
+        - "attention": Multi-head attention pooling. Each head learns different
+          attention patterns over nodes, which can break symmetry and preserve
+          width/thickness information.
 
     Args:
         config: Model configuration.
@@ -460,6 +598,18 @@ class VariableGraphVAEEncoder(nn.Module):
                 )
             )
 
+        # Pooling layer
+        self.pooling_type = config.pooling_type
+        if config.pooling_type == "attention":
+            # Multi-head attention pooling
+            # Output dimension is hidden_dim (same as mean pooling)
+            # so mu_head and logvar_head can stay the same
+            self.attention_pool = MultiHeadAttentionPooling(
+                hidden_dim=config.hidden_dim,
+                output_dim=config.hidden_dim,
+                num_heads=config.attention_heads,
+            )
+
         # Latent distribution heads
         self.mu_head = nn.Linear(config.hidden_dim, config.latent_dim)
         self.logvar_head = nn.Linear(config.hidden_dim, config.latent_dim)
@@ -503,29 +653,34 @@ class VariableGraphVAEEncoder(nn.Module):
             h = gat_layer(h, edge_index, edge_attr=edge_h)
             h = torch.relu(h)
 
-        # Masked global pooling
-        if batch is None:
-            if node_mask is not None:
-                # Apply mask for single graph
-                mask = node_mask.unsqueeze(-1)  # (num_nodes, 1)
-                h_masked = h * mask
-                h = h_masked.sum(dim=0, keepdim=True) / mask.sum().clamp(min=1)
-            else:
-                h = h.mean(dim=0, keepdim=True)
+        # Pooling: attention or mean
+        if self.pooling_type == "attention":
+            # Multi-head attention pooling
+            h = self.attention_pool(h, batch=batch, node_mask=node_mask)
         else:
-            if node_mask is not None:
-                # Masked pooling for batched graphs
-                mask = node_mask.unsqueeze(-1)
-                h_masked = h * mask
-                # Use torch.zeros + scatter_add for masked pooling
-                num_graphs = batch.max().item() + 1
-                h_sum = torch.zeros(num_graphs, h.shape[-1], device=h.device, dtype=h.dtype)
-                h_sum.scatter_add_(0, batch.unsqueeze(-1).expand_as(h_masked), h_masked)
-                count = torch.zeros(num_graphs, 1, device=h.device, dtype=h.dtype)
-                count.scatter_add_(0, batch.unsqueeze(-1), mask)
-                h = h_sum / count.clamp(min=1)
+            # Masked global mean pooling (original behavior)
+            if batch is None:
+                if node_mask is not None:
+                    # Apply mask for single graph
+                    mask = node_mask.unsqueeze(-1)  # (num_nodes, 1)
+                    h_masked = h * mask
+                    h = h_masked.sum(dim=0, keepdim=True) / mask.sum().clamp(min=1)
+                else:
+                    h = h.mean(dim=0, keepdim=True)
             else:
-                h = global_mean_pool(h, batch)
+                if node_mask is not None:
+                    # Masked pooling for batched graphs
+                    mask = node_mask.unsqueeze(-1)
+                    h_masked = h * mask
+                    # Use torch.zeros + scatter_add for masked pooling
+                    num_graphs = batch.max().item() + 1
+                    h_sum = torch.zeros(num_graphs, h.shape[-1], device=h.device, dtype=h.dtype)
+                    h_sum.scatter_add_(0, batch.unsqueeze(-1).expand_as(h_masked), h_masked)
+                    count = torch.zeros(num_graphs, 1, device=h.device, dtype=h.dtype)
+                    count.scatter_add_(0, batch.unsqueeze(-1), mask)
+                    h = h_sum / count.clamp(min=1)
+                else:
+                    h = global_mean_pool(h, batch)
 
         # Distribution parameters
         mu = self.mu_head(h)

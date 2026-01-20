@@ -482,3 +482,220 @@ class TestTransformerGraphVAE:
         model.eval()
         z_eval = model.reparameterize(mu, logvar)
         assert torch.allclose(z_eval, mu)
+
+
+class TestMultiHeadAttentionPooling:
+    """Tests for the MultiHeadAttentionPooling class."""
+
+    def test_forward_shape_single_graph(self):
+        """Test output shape for a single graph."""
+        from graph_cad.models.graph_vae import MultiHeadAttentionPooling
+
+        hidden_dim = 64
+        output_dim = 32
+        num_heads = 4
+        num_nodes = 10
+
+        pooling = MultiHeadAttentionPooling(hidden_dim, output_dim, num_heads)
+        h = torch.randn(num_nodes, hidden_dim)
+
+        output = pooling(h, batch=None, node_mask=None)
+
+        assert output.shape == (1, output_dim)
+
+    def test_forward_shape_batched(self):
+        """Test output shape for batched graphs."""
+        from graph_cad.models.graph_vae import MultiHeadAttentionPooling
+
+        hidden_dim = 64
+        output_dim = 32
+        num_heads = 4
+        batch_size = 4
+        nodes_per_graph = 8
+        total_nodes = batch_size * nodes_per_graph
+
+        pooling = MultiHeadAttentionPooling(hidden_dim, output_dim, num_heads)
+        h = torch.randn(total_nodes, hidden_dim)
+        batch = torch.repeat_interleave(torch.arange(batch_size), nodes_per_graph)
+
+        output = pooling(h, batch=batch, node_mask=None)
+
+        assert output.shape == (batch_size, output_dim)
+
+    def test_forward_with_mask(self):
+        """Test that mask is respected."""
+        from graph_cad.models.graph_vae import MultiHeadAttentionPooling
+
+        hidden_dim = 64
+        output_dim = 32
+        num_heads = 4
+        num_nodes = 10
+
+        pooling = MultiHeadAttentionPooling(hidden_dim, output_dim, num_heads)
+
+        # Create input where masked nodes have very different values
+        h = torch.randn(num_nodes, hidden_dim)
+        h[5:] = 1000.0  # Masked nodes with extreme values
+
+        node_mask = torch.zeros(num_nodes)
+        node_mask[:5] = 1.0  # Only first 5 nodes are real
+
+        output = pooling(h, batch=None, node_mask=node_mask)
+
+        # Output should not be affected by the extreme masked values
+        assert output.shape == (1, output_dim)
+        assert not torch.any(output > 500)  # Should not include the 1000.0 values
+
+    def test_gradient_flow(self):
+        """Test that gradients flow through attention pooling."""
+        from graph_cad.models.graph_vae import MultiHeadAttentionPooling
+
+        hidden_dim = 64
+        output_dim = 32
+        num_heads = 4
+        num_nodes = 10
+
+        pooling = MultiHeadAttentionPooling(hidden_dim, output_dim, num_heads)
+        h = torch.randn(num_nodes, hidden_dim, requires_grad=True)
+
+        output = pooling(h, batch=None, node_mask=None)
+        loss = output.sum()
+        loss.backward()
+
+        assert h.grad is not None
+        assert not torch.all(h.grad == 0)
+
+    def test_different_head_counts(self):
+        """Test with different numbers of attention heads."""
+        from graph_cad.models.graph_vae import MultiHeadAttentionPooling
+
+        hidden_dim = 64
+        output_dim = 32
+        num_nodes = 10
+        h = torch.randn(num_nodes, hidden_dim)
+
+        for num_heads in [1, 2, 4, 8]:
+            pooling = MultiHeadAttentionPooling(hidden_dim, output_dim, num_heads)
+            output = pooling(h)
+            assert output.shape == (1, output_dim)
+
+
+class TestEncoderWithAttentionPooling:
+    """Tests for VariableGraphVAEEncoder with attention pooling."""
+
+    @pytest.fixture
+    def attention_encoder_config(self):
+        """Encoder config with attention pooling."""
+        return VariableGraphVAEConfig(
+            node_features=13,
+            edge_features=2,
+            num_face_types=3,
+            face_embed_dim=8,
+            max_nodes=10,
+            max_edges=20,
+            hidden_dim=32,
+            num_gat_layers=2,
+            num_heads=4,
+            latent_dim=16,
+            encoder_dropout=0.0,
+            pooling_type="attention",
+            attention_heads=4,
+        )
+
+    def test_encoder_forward_attention_pooling(self, attention_encoder_config):
+        """Test encoder forward pass with attention pooling."""
+        encoder = VariableGraphVAEEncoder(attention_encoder_config)
+
+        batch_size = 2
+        max_nodes = attention_encoder_config.max_nodes
+        max_edges = attention_encoder_config.max_edges
+
+        # Create fake graph data
+        x = torch.randn(batch_size * max_nodes, attention_encoder_config.node_features)
+        face_types = torch.randint(0, attention_encoder_config.num_face_types,
+                                   (batch_size * max_nodes,))
+        edge_index = torch.randint(0, max_nodes, (2, batch_size * max_edges))
+        edge_attr = torch.randn(batch_size * max_edges, attention_encoder_config.edge_features)
+        batch = torch.repeat_interleave(torch.arange(batch_size), max_nodes)
+        node_mask = torch.ones(batch_size * max_nodes)
+
+        mu, logvar = encoder(x, face_types, edge_index, edge_attr, batch, node_mask)
+
+        assert mu.shape == (batch_size, attention_encoder_config.latent_dim)
+        assert logvar.shape == (batch_size, attention_encoder_config.latent_dim)
+
+    def test_encoder_gradient_flow_attention_pooling(self, attention_encoder_config):
+        """Test gradient flow through encoder with attention pooling."""
+        encoder = VariableGraphVAEEncoder(attention_encoder_config)
+
+        max_nodes = attention_encoder_config.max_nodes
+        max_edges = attention_encoder_config.max_edges
+
+        x = torch.randn(max_nodes, attention_encoder_config.node_features, requires_grad=True)
+        face_types = torch.randint(0, attention_encoder_config.num_face_types, (max_nodes,))
+        edge_index = torch.randint(0, max_nodes, (2, max_edges))
+        edge_attr = torch.randn(max_edges, attention_encoder_config.edge_features)
+
+        mu, logvar = encoder(x, face_types, edge_index, edge_attr)
+        loss = mu.sum() + logvar.sum()
+        loss.backward()
+
+        assert x.grad is not None
+
+    def test_attention_vs_mean_pooling_different_outputs(self):
+        """Test that attention pooling produces different outputs than mean pooling."""
+        # Create two encoders with same random seed initialization but different pooling
+        torch.manual_seed(42)
+        mean_config = VariableGraphVAEConfig(
+            node_features=13,
+            edge_features=2,
+            num_face_types=3,
+            face_embed_dim=8,
+            max_nodes=10,
+            max_edges=20,
+            hidden_dim=32,
+            num_gat_layers=2,
+            num_heads=4,
+            latent_dim=16,
+            encoder_dropout=0.0,
+            pooling_type="mean",
+        )
+        mean_encoder = VariableGraphVAEEncoder(mean_config)
+
+        torch.manual_seed(42)
+        attn_config = VariableGraphVAEConfig(
+            node_features=13,
+            edge_features=2,
+            num_face_types=3,
+            face_embed_dim=8,
+            max_nodes=10,
+            max_edges=20,
+            hidden_dim=32,
+            num_gat_layers=2,
+            num_heads=4,
+            latent_dim=16,
+            encoder_dropout=0.0,
+            pooling_type="attention",
+            attention_heads=4,
+        )
+        attn_encoder = VariableGraphVAEEncoder(attn_config)
+
+        # Create identical input
+        torch.manual_seed(123)
+        max_nodes = mean_config.max_nodes
+        max_edges = mean_config.max_edges
+        x = torch.randn(max_nodes, mean_config.node_features)
+        face_types = torch.randint(0, mean_config.num_face_types, (max_nodes,))
+        edge_index = torch.randint(0, max_nodes, (2, max_edges))
+        edge_attr = torch.randn(max_edges, mean_config.edge_features)
+
+        mean_encoder.eval()
+        attn_encoder.eval()
+
+        with torch.no_grad():
+            mean_mu, _ = mean_encoder(x, face_types, edge_index, edge_attr)
+            attn_mu, _ = attn_encoder(x, face_types, edge_index, edge_attr)
+
+        # Outputs should be different due to different pooling mechanisms
+        # (attention has additional parameters not shared with mean pooling)
+        assert not torch.allclose(mean_mu, attn_mu, atol=1e-3)
