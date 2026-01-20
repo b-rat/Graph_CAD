@@ -212,6 +212,7 @@ data/processed/
 data/models/
 outputs/
 outputs_251211
+outputs_phase2/
 *.pt
 *.pth
 *.ckpt
