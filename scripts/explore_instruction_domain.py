@@ -780,12 +780,12 @@ def main():
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_transformer_aux2_w100/best_model.pt",
+        default="outputs/vae_direct_kl_exclude_v2/best_model.pt",
     )
     parser.add_argument(
         "--editor-checkpoint",
         type=str,
-        default="outputs/latent_editor_tvae/best_model.pt",
+        default="outputs/latent_editor_all_params/best_model.pt",
     )
     parser.add_argument(
         "--latent-regressor-checkpoint",
