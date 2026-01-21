@@ -1,0 +1,156 @@
+{
+  "train": [
+    {
+      "epoch": 1,
+      "loss": 0.09751200974484285,
+      "delta_mse": 0.020251659156288952,
+      "direction_loss": 0.7726034926176071,
+      "direction_accuracy": 0.43175
+    },
+    {
+      "epoch": 2,
+      "loss": 0.05775598781198884,
+      "delta_mse": 0.014489844141042946,
+      "direction_loss": 0.4326614292213538,
+      "direction_accuracy": 0.70575
+    },
+    {
+      "epoch": 3,
+      "loss": 0.03265599890596544,
+      "delta_mse": 0.010091911095466154,
+      "direction_loss": 0.2256408738909037,
+      "direction_accuracy": 0.80075
+    },
+    {
+      "epoch": 4,
+      "loss": 0.029725803430036953,
+      "delta_mse": 0.007197716741269687,
+      "direction_loss": 0.22528086271860714,
+      "direction_accuracy": 0.7944166666666667
+    },
+    {
+      "epoch": 5,
+      "loss": 0.028059852127063398,
+      "delta_mse": 0.005714225423415579,
+      "direction_loss": 0.22345626285100298,
+      "direction_accuracy": 0.79675
+    },
+    {
+      "epoch": 6,
+      "loss": 0.026955731290431384,
+      "delta_mse": 0.0050247215676257236,
+      "direction_loss": 0.21931009302100332,
+      "direction_accuracy": 0.79775
+    },
+    {
+      "epoch": 7,
+      "loss": 0.026779058192885712,
+      "delta_mse": 0.004815108460597306,
+      "direction_loss": 0.21963949345153985,
+      "direction_accuracy": 0.798
+    },
+    {
+      "epoch": 8,
+      "loss": 0.02642982730191822,
+      "delta_mse": 0.004442975366371684,
+      "direction_loss": 0.21986851503814916,
+      "direction_accuracy": 0.79675
+    },
+    {
+      "epoch": 9,
+      "loss": 0.02612988309643697,
+      "delta_mse": 0.004462239820284594,
+      "direction_loss": 0.21667642867693895,
+      "direction_accuracy": 0.7961666666666667
+    },
+    {
+      "epoch": 10,
+      "loss": 0.025856441227321437,
+      "delta_mse": 0.004230702505282049,
+      "direction_loss": 0.21625738322171584,
+      "direction_accuracy": 0.7975833333333333
+    }
+  ],
+  "val": [
+    {
+      "epoch": 1,
+      "loss": 0.09548727757732073,
+      "delta_mse": 0.018781318315615258,
+      "delta_mae": 0.07285681851704916,
+      "direction_loss": 0.767059581677119,
+      "direction_accuracy": 0.4246666666666667
+    },
+    {
+      "epoch": 2,
+      "loss": 0.033386469458540284,
+      "delta_mse": 0.011179076900240033,
+      "delta_mae": 0.040907241349418956,
+      "direction_loss": 0.22207392106826107,
+      "direction_accuracy": 0.7986666666666666
+    },
+    {
+      "epoch": 3,
+      "loss": 0.02895524925241868,
+      "delta_mse": 0.007489529623417184,
+      "delta_mae": 0.03428628923495611,
+      "direction_loss": 0.21465719253321489,
+      "direction_accuracy": 0.7933333333333333
+    },
+    {
+      "epoch": 4,
+      "loss": 0.025695233390511323,
+      "delta_mse": 0.004801558646451061,
+      "delta_mae": 0.027838434793055058,
+      "direction_loss": 0.20893674288713374,
+      "direction_accuracy": 0.8106666666666666
+    },
+    {
+      "epoch": 5,
+      "loss": 0.025278839094331488,
+      "delta_mse": 0.004096380990929902,
+      "delta_mae": 0.025334618429342905,
+      "direction_loss": 0.21182457740985167,
+      "direction_accuracy": 0.8093333333333333
+    },
+    {
+      "epoch": 6,
+      "loss": 0.025214178901631384,
+      "delta_mse": 0.004074019762687385,
+      "delta_mae": 0.024270320088913045,
+      "direction_loss": 0.21140158687062408,
+      "direction_accuracy": 0.8006666666666666
+    },
+    {
+      "epoch": 7,
+      "loss": 0.02469350484770257,
+      "delta_mse": 0.0036782560985690604,
+      "delta_mae": 0.023013144011298815,
+      "direction_loss": 0.21015248410969312,
+      "direction_accuracy": 0.798
+    },
+    {
+      "epoch": 8,
+      "loss": 0.02447369627452766,
+      "delta_mse": 0.0037779166962718593,
+      "delta_mae": 0.02321927297860384,
+      "direction_loss": 0.20695779210639498,
+      "direction_accuracy": 0.816
+    },
+    {
+      "epoch": 9,
+      "loss": 0.024660999387114618,
+      "delta_mse": 0.003576011038152501,
+      "delta_mae": 0.022598083682358265,
+      "direction_loss": 0.2108498798533886,
+      "direction_accuracy": 0.79
+    },
+    {
+      "epoch": 10,
+      "loss": 0.024498905141973712,
+      "delta_mse": 0.003470984245437042,
+      "delta_mae": 0.021902015573034683,
+      "direction_loss": 0.21027920453224944,
+      "direction_accuracy": 0.7986666666666666
+    }
+  ]
+}
