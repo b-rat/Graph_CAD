@@ -2,17 +2,20 @@
 """
 Generate training data for the latent editor using Transformer VAE.
 
-Creates instruction-latent pairs for leg length operations only:
+Creates instruction-latent pairs for all 4 core parameters:
 - Increase/decrease leg1
 - Increase/decrease leg2
+- Increase/decrease width
+- Increase/decrease thickness
 - Change both legs
 - No-op (zero change)
 
 Uses absolute units (mm) for all commands.
 
 Usage:
-    python scripts/generate_edit_data_transformer.py --vae-checkpoint outputs/vae_transformer/best_model.pt
-    python scripts/generate_edit_data_transformer.py --num-samples 10000 --output data/edit_data_legs
+    python scripts/generate_edit_data_transformer.py --vae-checkpoint outputs/vae_direct_kl_exclude_v2/best_model.pt
+    python scripts/generate_edit_data_transformer.py --num-samples 10000 --output data/edit_data_all_params
+    python scripts/generate_edit_data_transformer.py --legs-only  # For leg-only mode (legacy)
 """
 
 from __future__ import annotations
@@ -35,8 +38,10 @@ from graph_cad.models.graph_vae import VariableGraphVAEConfig, VariableGraphVAEE
 from graph_cad.models.transformer_decoder import TransformerDecoderConfig, TransformerGraphVAE
 
 
-# Leg length delta ranges (absolute mm)
+# Delta ranges for each parameter (absolute mm)
 LEG_DELTA_RANGE = (-50, 50)  # Can change by -50mm to +50mm
+WIDTH_DELTA_RANGE = (-20, 20)  # Width: 20-60mm range, so ±20mm
+THICKNESS_DELTA_RANGE = (-5, 5)  # Thickness: 3-12mm range, so ±5mm
 
 # Maximum padding values (must match VAE training)
 MAX_NODES = 20
@@ -72,7 +77,27 @@ NOOP_TEMPLATES = [
     "no changes",
     "leave it unchanged",
     "don't modify anything",
-    "keep the leg lengths",
+    "keep all dimensions",
+]
+
+# Instruction templates for width operations
+WIDTH_TEMPLATES = [
+    "make the bracket {delta:+.0f}mm {direction}",
+    "change width by {delta:+.0f}mm",
+    "{direction} the width by {abs_delta:.0f}mm",
+    "adjust width by {delta:+.0f}mm",
+    "width {delta:+.0f}mm",
+    "make it {delta:+.0f}mm {direction} in the Y direction",
+]
+
+# Instruction templates for thickness operations
+THICKNESS_TEMPLATES = [
+    "make the bracket {delta:+.0f}mm {direction}",
+    "change thickness by {delta:+.0f}mm",
+    "{direction} the thickness by {abs_delta:.0f}mm",
+    "adjust thickness by {delta:+.0f}mm",
+    "thickness {delta:+.0f}mm",
+    "make it {delta:+.0f}mm {direction}",
 ]
 
 
@@ -82,8 +107,17 @@ def generate_instruction(
     rng: np.random.Generator,
     delta2: float | None = None,
 ) -> str:
-    """Generate instruction for a leg length operation."""
-    direction = "longer" if delta > 0 else "shorter"
+    """Generate instruction for a parameter edit operation."""
+    # Direction words depend on the parameter type
+    if param in ("leg1_length", "leg2_length", "both"):
+        direction = "longer" if delta > 0 else "shorter"
+    elif param == "width":
+        direction = "wider" if delta > 0 else "narrower"
+    elif param == "thickness":
+        direction = "thicker" if delta > 0 else "thinner"
+    else:
+        direction = "larger" if delta > 0 else "smaller"
+
     abs_delta = abs(delta)
 
     if param == "leg1_length":
@@ -92,6 +126,10 @@ def generate_instruction(
         template = rng.choice(LEG2_TEMPLATES)
     elif param == "both":
         template = rng.choice(BOTH_LEGS_TEMPLATES)
+    elif param == "width":
+        template = rng.choice(WIDTH_TEMPLATES)
+    elif param == "thickness":
+        template = rng.choice(THICKNESS_TEMPLATES)
     else:
         return f"change {param} by {delta:+.0f}mm"
 
@@ -104,7 +142,7 @@ def generate_instruction(
             direction=direction,
         )
     except KeyError:
-        return f"change legs by {delta:+.0f}mm"
+        return f"change {param} by {delta:+.0f}mm"
 
 
 def load_transformer_vae(checkpoint_path: str, device: str = "cpu") -> TransformerGraphVAE:
@@ -363,6 +401,146 @@ def generate_both_legs_sample(
         return None
 
 
+def generate_width_sample(
+    vae: TransformerGraphVAE,
+    rng: np.random.Generator,
+    device: str,
+) -> dict | None:
+    """Generate a width edit sample."""
+    try:
+        # Sample source bracket with variable topology
+        ranges = VariableLBracketRanges()
+        bracket_src = VariableLBracket.random(rng, ranges)
+
+        # Sample delta
+        delta_min, delta_max = WIDTH_DELTA_RANGE
+        delta = rng.uniform(delta_min, delta_max)
+
+        # Skip very small deltas
+        if abs(delta) < 0.5:
+            delta = 0.5 * np.sign(delta) if delta != 0 else rng.choice([-2.0, 2.0])
+
+        # Get old value and compute new value
+        old_value = bracket_src.width
+        new_value = old_value + delta
+
+        # Clamp to valid range
+        new_value = max(ranges.width[0], min(ranges.width[1], new_value))
+        actual_delta = new_value - old_value
+
+        # Skip if clamped to near-zero
+        if abs(actual_delta) < 0.25:
+            return None
+
+        # Create target bracket with modified width
+        bracket_tgt = VariableLBracket(
+            leg1_length=bracket_src.leg1_length,
+            leg2_length=bracket_src.leg2_length,
+            width=new_value,
+            thickness=bracket_src.thickness,
+            fillet_radius=bracket_src.fillet_radius,
+            hole1_diameters=bracket_src.hole1_diameters,
+            hole1_distances=bracket_src.hole1_distances,
+            hole2_diameters=bracket_src.hole2_diameters,
+            hole2_distances=bracket_src.hole2_distances,
+        )
+
+        # Encode both brackets
+        z_src = encode_bracket(vae, bracket_src, device)
+        z_tgt = encode_bracket(vae, bracket_tgt, device)
+        delta_z = z_tgt - z_src
+
+        # Generate instruction
+        instruction = generate_instruction("width", actual_delta, rng)
+
+        # Direction label
+        direction = 1.0 if actual_delta > 0 else 0.0
+
+        return {
+            "instruction": instruction,
+            "z_src": z_src.tolist(),
+            "z_tgt": z_tgt.tolist(),
+            "delta_z": delta_z.tolist(),
+            "param_deltas": {"width": float(actual_delta)},
+            "direction": direction,
+            "edit_type": "width",
+        }
+
+    except Exception as e:
+        print(f"Warning: Failed to generate width sample: {e}")
+        return None
+
+
+def generate_thickness_sample(
+    vae: TransformerGraphVAE,
+    rng: np.random.Generator,
+    device: str,
+) -> dict | None:
+    """Generate a thickness edit sample."""
+    try:
+        # Sample source bracket with variable topology
+        ranges = VariableLBracketRanges()
+        bracket_src = VariableLBracket.random(rng, ranges)
+
+        # Sample delta
+        delta_min, delta_max = THICKNESS_DELTA_RANGE
+        delta = rng.uniform(delta_min, delta_max)
+
+        # Skip very small deltas
+        if abs(delta) < 0.25:
+            delta = 0.25 * np.sign(delta) if delta != 0 else rng.choice([-1.0, 1.0])
+
+        # Get old value and compute new value
+        old_value = bracket_src.thickness
+        new_value = old_value + delta
+
+        # Clamp to valid range
+        new_value = max(ranges.thickness[0], min(ranges.thickness[1], new_value))
+        actual_delta = new_value - old_value
+
+        # Skip if clamped to near-zero
+        if abs(actual_delta) < 0.1:
+            return None
+
+        # Create target bracket with modified thickness
+        bracket_tgt = VariableLBracket(
+            leg1_length=bracket_src.leg1_length,
+            leg2_length=bracket_src.leg2_length,
+            width=bracket_src.width,
+            thickness=new_value,
+            fillet_radius=bracket_src.fillet_radius,
+            hole1_diameters=bracket_src.hole1_diameters,
+            hole1_distances=bracket_src.hole1_distances,
+            hole2_diameters=bracket_src.hole2_diameters,
+            hole2_distances=bracket_src.hole2_distances,
+        )
+
+        # Encode both brackets
+        z_src = encode_bracket(vae, bracket_src, device)
+        z_tgt = encode_bracket(vae, bracket_tgt, device)
+        delta_z = z_tgt - z_src
+
+        # Generate instruction
+        instruction = generate_instruction("thickness", actual_delta, rng)
+
+        # Direction label
+        direction = 1.0 if actual_delta > 0 else 0.0
+
+        return {
+            "instruction": instruction,
+            "z_src": z_src.tolist(),
+            "z_tgt": z_tgt.tolist(),
+            "delta_z": delta_z.tolist(),
+            "param_deltas": {"thickness": float(actual_delta)},
+            "direction": direction,
+            "edit_type": "thickness",
+        }
+
+    except Exception as e:
+        print(f"Warning: Failed to generate thickness sample: {e}")
+        return None
+
+
 def generate_noop_sample(
     vae: TransformerGraphVAE,
     rng: np.random.Generator,
@@ -401,21 +579,27 @@ def generate_dataset(
     num_samples: int,
     device: str,
     seed: int = 42,
-    leg1_ratio: float = 0.35,
-    leg2_ratio: float = 0.35,
-    both_legs_ratio: float = 0.20,
+    legs_only: bool = False,
+    leg1_ratio: float = 0.20,
+    leg2_ratio: float = 0.20,
+    width_ratio: float = 0.20,
+    thickness_ratio: float = 0.20,
+    both_legs_ratio: float = 0.10,
     noop_ratio: float = 0.10,
 ) -> list[dict]:
     """
-    Generate full dataset of leg length edit samples.
+    Generate full dataset of edit samples for all 4 parameters.
 
     Args:
         vae: Transformer VAE model
         num_samples: Total number of samples
         device: Device for inference
         seed: Random seed
+        legs_only: If True, only generate leg edits (legacy mode)
         leg1_ratio: Fraction of leg1-only edits
         leg2_ratio: Fraction of leg2-only edits
+        width_ratio: Fraction of width edits (ignored if legs_only)
+        thickness_ratio: Fraction of thickness edits (ignored if legs_only)
         both_legs_ratio: Fraction of both-legs edits
         noop_ratio: Fraction of no-op samples
 
@@ -425,82 +609,89 @@ def generate_dataset(
     rng = np.random.default_rng(seed)
     samples = []
 
+    # Adjust ratios for legs-only mode
+    if legs_only:
+        # Redistribute width/thickness ratios to legs
+        extra = width_ratio + thickness_ratio
+        leg1_ratio = 0.35
+        leg2_ratio = 0.35
+        both_legs_ratio = 0.20
+        noop_ratio = 0.10
+        width_ratio = 0.0
+        thickness_ratio = 0.0
+
     # Calculate counts
     num_leg1 = int(num_samples * leg1_ratio)
     num_leg2 = int(num_samples * leg2_ratio)
+    num_width = int(num_samples * width_ratio)
+    num_thickness = int(num_samples * thickness_ratio)
     num_both = int(num_samples * both_legs_ratio)
-    num_noop = num_samples - num_leg1 - num_leg2 - num_both
+    num_noop = num_samples - num_leg1 - num_leg2 - num_width - num_thickness - num_both
 
-    print(f"Generating {num_leg1} leg1 edits, {num_leg2} leg2 edits, "
-          f"{num_both} both-legs edits, {num_noop} no-ops")
+    if legs_only:
+        print(f"LEGS-ONLY MODE: Generating {num_leg1} leg1, {num_leg2} leg2, "
+              f"{num_both} both-legs, {num_noop} no-ops")
+    else:
+        print(f"ALL PARAMS MODE: Generating {num_leg1} leg1, {num_leg2} leg2, "
+              f"{num_width} width, {num_thickness} thickness, "
+              f"{num_both} both-legs, {num_noop} no-ops")
+
+    def generate_samples_of_type(generator_fn, target_count, edit_type, desc, *args):
+        """Helper to generate samples of a specific type."""
+        generated = []
+        pbar = tqdm(total=target_count, desc=desc)
+        attempts = 0
+        max_attempts = target_count * 3
+
+        while len(generated) < target_count and attempts < max_attempts:
+            sample = generator_fn(*args)
+            if sample is not None:
+                generated.append(sample)
+                pbar.update(1)
+            attempts += 1
+
+        pbar.close()
+        if len(generated) < target_count:
+            print(f"Warning: Could only generate {len(generated)}/{target_count} {edit_type} samples")
+        return generated
 
     # Generate leg1 edits
-    print("Generating leg1 edits...")
-    pbar = tqdm(total=num_leg1, desc="Leg1 edits")
-    attempts = 0
-    max_attempts = num_leg1 * 3
-
-    while len([s for s in samples if s.get("edit_type") == "single_leg" and "leg1_length" in s.get("param_deltas", {})]) < num_leg1:
-        sample = generate_single_leg_sample(vae, rng, device, "leg1_length")
-        if sample is not None:
-            samples.append(sample)
-            pbar.update(1)
-        attempts += 1
-        if attempts > max_attempts:
-            print(f"Warning: Could only generate {len([s for s in samples if 'leg1_length' in s.get('param_deltas', {})])} leg1 samples")
-            break
-    pbar.close()
+    samples.extend(generate_samples_of_type(
+        lambda: generate_single_leg_sample(vae, rng, device, "leg1_length"),
+        num_leg1, "leg1", "Leg1 edits"
+    ))
 
     # Generate leg2 edits
-    print("Generating leg2 edits...")
-    pbar = tqdm(total=num_leg2, desc="Leg2 edits")
-    attempts = 0
-    max_attempts = num_leg2 * 3
+    samples.extend(generate_samples_of_type(
+        lambda: generate_single_leg_sample(vae, rng, device, "leg2_length"),
+        num_leg2, "leg2", "Leg2 edits"
+    ))
 
-    while len([s for s in samples if s.get("edit_type") == "single_leg" and "leg2_length" in s.get("param_deltas", {})]) < num_leg2:
-        sample = generate_single_leg_sample(vae, rng, device, "leg2_length")
-        if sample is not None:
-            samples.append(sample)
-            pbar.update(1)
-        attempts += 1
-        if attempts > max_attempts:
-            print(f"Warning: Could only generate {len([s for s in samples if 'leg2_length' in s.get('param_deltas', {})])} leg2 samples")
-            break
-    pbar.close()
+    # Generate width edits (if not legs-only)
+    if num_width > 0:
+        samples.extend(generate_samples_of_type(
+            lambda: generate_width_sample(vae, rng, device),
+            num_width, "width", "Width edits"
+        ))
+
+    # Generate thickness edits (if not legs-only)
+    if num_thickness > 0:
+        samples.extend(generate_samples_of_type(
+            lambda: generate_thickness_sample(vae, rng, device),
+            num_thickness, "thickness", "Thickness edits"
+        ))
 
     # Generate both-legs edits
-    print("Generating both-legs edits...")
-    pbar = tqdm(total=num_both, desc="Both-legs edits")
-    attempts = 0
-    max_attempts = num_both * 3
-
-    while len([s for s in samples if s.get("edit_type") == "both_legs"]) < num_both:
-        sample = generate_both_legs_sample(vae, rng, device)
-        if sample is not None:
-            samples.append(sample)
-            pbar.update(1)
-        attempts += 1
-        if attempts > max_attempts:
-            print(f"Warning: Could only generate {len([s for s in samples if s.get('edit_type') == 'both_legs'])} both-legs samples")
-            break
-    pbar.close()
+    samples.extend(generate_samples_of_type(
+        lambda: generate_both_legs_sample(vae, rng, device),
+        num_both, "both_legs", "Both-legs edits"
+    ))
 
     # Generate no-op samples
-    print("Generating no-op samples...")
-    pbar = tqdm(total=num_noop, desc="No-op edits")
-    attempts = 0
-    max_attempts = num_noop * 3
-
-    while len([s for s in samples if s.get("edit_type") == "noop"]) < num_noop:
-        sample = generate_noop_sample(vae, rng, device)
-        if sample is not None:
-            samples.append(sample)
-            pbar.update(1)
-        attempts += 1
-        if attempts > max_attempts:
-            print(f"Warning: Could only generate {len([s for s in samples if s.get('edit_type') == 'noop'])} noop samples")
-            break
-    pbar.close()
+    samples.extend(generate_samples_of_type(
+        lambda: generate_noop_sample(vae, rng, device),
+        num_noop, "noop", "No-op edits"
+    ))
 
     # Shuffle
     rng.shuffle(samples)
@@ -510,13 +701,18 @@ def generate_dataset(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Generate latent edit data for Transformer VAE (leg lengths only)"
+        description="Generate latent edit data for Transformer VAE (all 4 parameters)"
     )
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_transformer/best_model.pt",
+        default="outputs/vae_direct_kl_exclude_v2/best_model.pt",
         help="Path to Transformer VAE checkpoint",
+    )
+    parser.add_argument(
+        "--legs-only",
+        action="store_true",
+        help="Only generate leg length edits (legacy mode)",
     )
     parser.add_argument(
         "--num-samples",
@@ -527,7 +723,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="data/edit_data_legs",
+        default="data/edit_data_all_params",
         help="Output directory for generated data",
     )
     parser.add_argument(
@@ -569,12 +765,14 @@ def main():
     print(f"  Using latent dimension: {latent_dim}")
 
     # Generate samples
-    print(f"\nGenerating {args.num_samples} leg length edit samples...")
+    mode_str = "leg length" if args.legs_only else "all parameter"
+    print(f"\nGenerating {args.num_samples} {mode_str} edit samples...")
     samples = generate_dataset(
         vae=vae,
         num_samples=args.num_samples,
         device=args.device,
         seed=args.seed,
+        legs_only=args.legs_only,
     )
 
     print(f"\nGenerated {len(samples)} samples")
@@ -606,6 +804,13 @@ def main():
         json.dump(test_samples, f)
 
     # Save metadata
+    if args.legs_only:
+        edit_types_list = ["single_leg", "both_legs", "noop"]
+        parameters_list = ["leg1_length", "leg2_length"]
+    else:
+        edit_types_list = ["single_leg", "both_legs", "width", "thickness", "noop"]
+        parameters_list = ["leg1_length", "leg2_length", "width", "thickness"]
+
     metadata = {
         "vae_checkpoint": args.vae_checkpoint,
         "latent_dim": latent_dim,
@@ -615,9 +820,10 @@ def main():
         "test_size": len(test_samples),
         "seed": args.seed,
         "paired": False,
-        "edit_types": ["single_leg", "both_legs", "noop"],
-        "parameters": ["leg1_length", "leg2_length"],
+        "edit_types": edit_types_list,
+        "parameters": parameters_list,
         "variable_topology": True,
+        "legs_only": args.legs_only,
     }
     with open(output_dir / "metadata.json", "w") as f:
         json.dump(metadata, f, indent=2)
