@@ -1254,18 +1254,16 @@ def normalize_params_for_latent(params: torch.Tensor) -> torch.Tensor:
     the parameter ranges to [-2, 2] which covers ~95% of N(0,1).
 
     Args:
-        params: Raw parameters, shape (batch, 4) in mm
+        params: Normalized parameters in [0, 1] range, shape (batch, 4)
                 [leg1, leg2, width, thickness]
+                (Note: The dataset returns params already normalized to [0, 1])
 
     Returns:
-        Normalized parameters in [-2, 2] range
+        Parameters scaled to [-2, 2] range for latent supervision
     """
-    device = params.device
-    mins = PARAM_MINS.to(device)
-    ranges = PARAM_RANGES.to(device)
-    # First normalize to [0, 1], then scale to [-2, 2]
-    norm_01 = (params - mins) / ranges
-    return norm_01 * 4.0 - 2.0
+    # Dataset returns params already normalized to [0, 1]
+    # Scale to [-2, 2] for latent space compatibility
+    return params * 4.0 - 2.0
 
 
 def denormalize_params(params_norm: torch.Tensor) -> torch.Tensor:
