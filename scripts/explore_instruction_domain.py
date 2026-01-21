@@ -3,9 +3,9 @@
 Systematic exploration of the instruction domain for the Latent Editor.
 
 This script loads models once and runs inference across a grid of:
-  - Parameters: leg1_length, leg2_length (width/thickness not encoded in latent)
+  - Parameters: leg1_length, leg2_length, width, thickness (all 4 with direct latent supervision)
   - Directions: increase, decrease
-  - Magnitudes: 10, 20, 30, 50mm
+  - Magnitudes: varies by parameter (legs: 10-50mm, width: 5-20mm, thickness: 2-5mm)
   - Starting brackets: sampled across the parameter space
 
 IMPORTANT: Uses explicit +/- signs in instructions (required by current model).
@@ -88,6 +88,34 @@ INSTRUCTION_DOMAIN = {
             "shorten both legs by -{amount}mm",
         ],
     },
+    "width": {
+        "display_name": "width",
+        "magnitudes": [5, 10, 15, 20],
+        "increase_templates": [
+            "make the bracket +{amount}mm wider",
+            "change width by +{amount}mm",
+            "width +{amount}mm",
+        ],
+        "decrease_templates": [
+            "make the bracket -{amount}mm narrower",
+            "change width by -{amount}mm",
+            "width -{amount}mm",
+        ],
+    },
+    "thickness": {
+        "display_name": "thickness",
+        "magnitudes": [2, 3, 5],
+        "increase_templates": [
+            "make the bracket +{amount}mm thicker",
+            "change thickness by +{amount}mm",
+            "thickness +{amount}mm",
+        ],
+        "decrease_templates": [
+            "make the bracket -{amount}mm thinner",
+            "change thickness by -{amount}mm",
+            "thickness -{amount}mm",
+        ],
+    },
 }
 
 # No-op instructions (should produce zero or near-zero delta)
@@ -117,6 +145,18 @@ QUICK_DOMAIN = {
         "magnitudes": [20],
         "increase_templates": ["make both legs +{amount}mm longer"],
         "decrease_templates": ["make both legs -{amount}mm shorter"],
+    },
+    "width": {
+        "display_name": "width",
+        "magnitudes": [10],
+        "increase_templates": ["make the bracket +{amount}mm wider"],
+        "decrease_templates": ["make the bracket -{amount}mm narrower"],
+    },
+    "thickness": {
+        "display_name": "thickness",
+        "magnitudes": [3],
+        "increase_templates": ["make the bracket +{amount}mm thicker"],
+        "decrease_templates": ["make the bracket -{amount}mm thinner"],
     },
 }
 
@@ -172,12 +212,14 @@ class ModelBundle:
         editor_checkpoint: str,
         latent_regressor_checkpoint: str,
         device: str,
+        direct_latent: bool = False,
     ):
         self.device = device
         self.vae = None
         self.vae_type = None
         self.editor = None
         self.latent_regressor = None
+        self.direct_latent = direct_latent
 
         self._load_models(vae_checkpoint, editor_checkpoint, latent_regressor_checkpoint)
 
@@ -223,10 +265,14 @@ class ModelBundle:
         else:
             raise ValueError("Only Transformer VAE is supported. Use outputs/vae_transformer_aux2_w100/best_model.pt")
 
-        # Load Latent Regressor (z -> params directly)
-        print(f"\n[2/3] Loading Latent Regressor from {latent_regressor_checkpoint}...")
-        self._load_latent_regressor(latent_regressor_checkpoint)
-        print(f"  Config: {self.latent_regressor.config.latent_dim}D → {self.latent_regressor.config.hidden_dims} → 4D")
+        # Load Latent Regressor (z -> params directly) - skip if using direct latent supervision
+        if self.direct_latent:
+            print(f"\n[2/3] Using direct latent supervision (mu[:4] encodes params)")
+            print(f"  Skipping latent regressor - params read directly from z[:, :4]")
+        else:
+            print(f"\n[2/3] Loading Latent Regressor from {latent_regressor_checkpoint}...")
+            self._load_latent_regressor(latent_regressor_checkpoint)
+            print(f"  Config: {self.latent_regressor.config.latent_dim}D → {self.latent_regressor.config.hidden_dims} → 4D")
 
         # Load Latent Editor (most expensive)
         print(f"\n[3/3] Loading Latent Editor from {editor_checkpoint}...")
@@ -380,8 +426,14 @@ def run_single_inference(
         return params_norm * (maxs - mins) + mins
 
     with torch.no_grad():
-        orig_params_norm = models.latent_regressor(z_src)
-        edit_params_norm = models.latent_regressor(z_edited)
+        if models.direct_latent:
+            # Direct latent supervision: mu[:4] contains params in [-2, 2] range
+            # Convert to [0, 1] then denormalize to mm
+            orig_params_norm = (z_src[:, :4] + 2.0) / 4.0
+            edit_params_norm = (z_edited[:, :4] + 2.0) / 4.0
+        else:
+            orig_params_norm = models.latent_regressor(z_src)
+            edit_params_norm = models.latent_regressor(z_edited)
         orig_params = denormalize(orig_params_norm).cpu().numpy().flatten()
         edit_params = denormalize(edit_params_norm).cpu().numpy().flatten()
 
@@ -792,6 +844,13 @@ def main():
         type=str,
         default="outputs/latent_regressor_tvae/best_model.pt",
     )
+    parser.add_argument(
+        "--direct-latent",
+        action="store_true",
+        default=True,
+        help="Use direct latent supervision (mu[:4] encodes params directly). "
+             "Skips latent regressor loading. Default: True for vae_direct_kl_exclude_v2",
+    )
 
     # Output
     parser.add_argument(
@@ -837,6 +896,7 @@ def main():
         args.editor_checkpoint,
         args.latent_regressor_checkpoint,
         device,
+        direct_latent=args.direct_latent,
     )
     load_time = time.time() - start_time
     print(f"Model loading took {load_time:.1f}s")
