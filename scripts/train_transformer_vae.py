@@ -562,6 +562,7 @@ def main():
         print(f"  Aux weight: {args.aux_weight}, Num params: {args.num_params}, Loss type: {args.aux_loss_type}")
         if args.aux_loss_type == "direct":
             print(f"  Direct latent supervision: mu[:, :4] will encode normalized parameters")
+            print(f"  KL exclusion: First {args.num_params} dims excluded from KL (free to encode params)")
     print("-" * 140)
 
     best_val_loss = float("inf")

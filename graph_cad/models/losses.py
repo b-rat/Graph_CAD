@@ -101,6 +101,7 @@ def kl_divergence(
     mu: torch.Tensor,
     logvar: torch.Tensor,
     free_bits: float = 0.0,
+    exclude_dims: int = 0,
 ) -> torch.Tensor:
     """
     Compute KL divergence KL(q(z|x) || p(z)) where p(z) = N(0, I).
@@ -112,6 +113,9 @@ def kl_divergence(
         logvar: Latent log variance, shape (batch, latent_dim).
         free_bits: Minimum KL per dimension to prevent posterior collapse.
                    If > 0, dimensions with KL < free_bits contribute 0.
+        exclude_dims: Number of first dimensions to exclude from KL computation.
+                      Used with direct latent supervision to let those dims
+                      encode parameters freely without N(0,1) constraint.
 
     Returns:
         kl_loss: Scalar KL divergence (averaged over batch).
@@ -122,6 +126,10 @@ def kl_divergence(
     if free_bits > 0:
         # Free bits: don't penalize dimensions below threshold
         kl_per_dim = torch.clamp(kl_per_dim, min=free_bits) - free_bits
+
+    # Exclude first N dimensions from KL if specified
+    if exclude_dims > 0:
+        kl_per_dim = kl_per_dim[:, exclude_dims:]
 
     # Sum over latent dimensions, mean over batch
     kl_loss = kl_per_dim.sum(dim=-1).mean()
@@ -1083,6 +1091,7 @@ def transformer_vae_loss(
     beta: float = 0.1,
     config: HungarianLossConfig | None = None,
     free_bits: float = 0.5,
+    kl_exclude_dims: int = 0,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
     """
     Combined loss for Transformer Graph VAE with Hungarian matching.
@@ -1106,6 +1115,8 @@ def transformer_vae_loss(
         beta: KL divergence weight
         config: Loss configuration
         free_bits: Minimum KL per dimension
+        kl_exclude_dims: Number of first latent dims to exclude from KL.
+                         Used with direct latent supervision.
 
     Returns:
         total_loss: Combined loss
@@ -1147,8 +1158,8 @@ def transformer_vae_loss(
         matchings, config
     )
 
-    # 4. KL divergence
-    kl_loss = kl_divergence(mu, logvar, free_bits)
+    # 4. KL divergence (optionally excluding first N dims for direct supervision)
+    kl_loss = kl_divergence(mu, logvar, free_bits, exclude_dims=kl_exclude_dims)
 
     # Combined loss
     total_loss = (
@@ -1163,6 +1174,7 @@ def transformer_vae_loss(
         **edge_metrics,
         "node_loss": node_loss.detach(),
         "kl_loss": kl_loss.detach(),
+        "kl_exclude_dims": torch.tensor(kl_exclude_dims),
         "beta": torch.tensor(beta),
         "total_loss": total_loss.detach(),
     }
@@ -1311,8 +1323,8 @@ def transformer_vae_loss_with_aux(
         free_bits: Minimum KL per dimension
         aux_loss_type: Type of auxiliary loss:
             - "direct": Direct latent supervision - forces mu[:, :4] to encode
-              normalized parameters. No param_head needed. Best for encoding
-              parameters that are lost in pooling (width, thickness).
+              normalized parameters. No param_head needed. KL is excluded from
+              the first 4 dims so they can encode params freely.
             - "correlation": Negative correlation loss (scale/offset invariant)
             - "mse": Raw MSE loss
             - "mse_normalized": MSE on [0,1] normalized parameters
@@ -1321,9 +1333,13 @@ def transformer_vae_loss_with_aux(
         total_loss: Combined loss
         loss_dict: All components for logging
     """
-    # Base transformer VAE loss
+    # Determine KL exclusion for direct latent supervision
+    num_params = param_target.shape[1]
+    kl_exclude_dims = num_params if (aux_loss_type == "direct" and aux_weight > 0) else 0
+
+    # Base transformer VAE loss (with KL exclusion if using direct supervision)
     base_loss, loss_dict = transformer_vae_loss(
-        outputs, targets, beta, config, free_bits
+        outputs, targets, beta, config, free_bits, kl_exclude_dims=kl_exclude_dims
     )
 
     # Auxiliary parameter loss
