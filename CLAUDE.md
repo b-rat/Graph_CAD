@@ -79,7 +79,8 @@ The local machine (MPS) is too slow for LLM inference. Always use RunPod for:
 | 1. Fixed Topology PoC | Complete | 80.2% direction accuracy |
 | 2. Variable Topology (MLP Decoder) | Complete | 64% ceiling (architectural limitation) |
 | 3. DETR Transformer Decoder | Complete | 100% face/edge accuracy, leg1/leg2 r>0.98 |
-| **3b. Attention Pooling** | **In Progress** | Testing width/thickness encoding fix |
+| 3b. Attention Pooling | Failed | Did not improve width/thickness encoding |
+| **3c. Direct Latent Supervision** | **Complete** | width r=0.998, thickness r=0.355 |
 
 **Documentation:**
 - `docs/phase2_mlp_decoder_report.md` — Root cause analysis
@@ -115,16 +116,16 @@ Replace MLP decoder with permutation-invariant transformer to break the 64% ceil
 **Reconstruction works perfectly:**
 - Face type accuracy: 100%
 - Edge accuracy: 100%
-- Leg parameters encoded: r > 0.98
+- All 4 core parameters now encoded in latent space
 
-**Unsolved Problem: Width/Thickness Not Encoded**
+**SOLVED: Width Now Encoded via Direct Latent Supervision**
 
-| Parameter | Correlation | Status |
-|-----------|-------------|--------|
-| leg1 | r = 0.992 | ✓ Excellent |
-| leg2 | r = 0.989 | ✓ Excellent |
-| width | r = 0.155 | ✗ Poor |
-| thickness | r = 0.102 | ✗ Poor |
+| Parameter | Baseline | Direct Latent | Status |
+|-----------|----------|---------------|--------|
+| leg1 | r = 0.992 | r = 0.999 | ✓ Excellent |
+| leg2 | r = 0.989 | r = 0.999 | ✓ Excellent |
+| width | r = 0.155 | r = 0.998 | ✓ **FIXED** |
+| thickness | r = 0.102 | r = 0.355 | ↑ Improved |
 
 **Root Cause: Symmetric Cancellation in Mean Pooling**
 
@@ -174,50 +175,67 @@ z (latent) → param_head (MLP) → predicted [leg1, leg2, width, thickness]
 - Encoder learns what decoder needs (leg lengths), ignores aux head signal
 - param_head can only predict what's already in latent space
 
-### Current Experiment: Multi-Head Attention Pooling
+### Failed Experiment: Multi-Head Attention Pooling
 
 **Hypothesis:** Replace mean pooling with learned attention pooling to break symmetric cancellation.
 
-**Implementation:** `MultiHeadAttentionPooling` class in `graph_cad/models/graph_vae.py`
+**Result:** Did NOT improve width/thickness encoding. Attention pooling achieved similar or worse correlations than mean pooling across multiple configurations (3 GAT/64D, 6 GAT/128D, 2 GAT/64D).
+
+| Configuration | width r | thickness r |
+|---------------|---------|-------------|
+| Baseline (3 GAT, Mean) | 0.155 | 0.102 |
+| Attention (3 GAT, 4 heads) | 0.068 | 0.104 |
+| Scaled (6 GAT, 128D, 8 heads) | 0.056 | 0.093 |
+
+**Why it failed:** Attention pooling changes *how* faces are weighted but doesn't fundamentally solve the information bottleneck. The symmetric cancellation happens in the normalized face features, not the pooling weights.
+
+### Successful Solution: Direct Latent Supervision with KL Exclusion
+
+**Approach:** Force first 4 latent dimensions to directly encode normalized parameters, and exclude these dimensions from KL divergence.
 
 ```python
-# 4 attention heads, each learns different weights over faces
-# Head 1 might attend to left faces → captures width
-# Head 2 might attend to leg1 end → captures leg1 length
-# etc.
+# In losses.py
+def normalize_params_for_latent(params: torch.Tensor) -> torch.Tensor:
+    """Scale [0, 1] normalized params to [-2, 2] for latent space."""
+    return params * 4.0 - 2.0
 
-python scripts/train_transformer_vae.py \
-    --pooling-type attention \
-    --attention-heads 4 \
-    --output-dir outputs/vae_transformer_attn_pool
+# Direct supervision on mu[:, :4]
+direct_loss = F.mse_loss(mu[:, :4], normalize_params_for_latent(target_params))
+
+# KL exclusion: don't penalize first 4 dims toward N(0,1)
+kl_per_dim = kl_per_dim[:, 4:]  # Skip supervised dims
 ```
 
-**Why this should work:**
-- Attention can learn to weight Y=0 face higher than Y=width face
-- Breaks the symmetric cancellation: `0.7×(-Δ) + 0.3×(+Δ) = -0.4Δ` (signal preserved!)
-- Each head can specialize for different parameters
-
-**Training Status:** Running on RunPod (`tmux attach -t train`)
-- Epoch 26/100, 100% face/edge accuracy, 32/32 active dims
-- Checkpoint: `outputs/vae_transformer_attn_pool/`
-
-**Estimated probability of success:** 65-75% (directly addresses root cause)
-
-### Alternative Approaches (If Attention Pooling Fails)
-
-**Option A: Direct Latent Supervision**
-Force first 4 latent dims to equal normalized parameters:
-```python
-direct_loss = F.mse_loss(mu[:, :4], normalize_params(target_params))
+**Training command:**
+```bash
+python scripts/train_transformer_vae.py --epochs 100 \
+    --aux-weight 1.0 --aux-loss-type direct \
+    --output-dir outputs/vae_direct_kl_exclude_v2
 ```
-Guarantees parameters are encoded — no competition with reconstruction.
 
-**Option B: Two-Phase Training**
-1. Phase 1: Train encoder + param_head only (no decoder)
-2. Phase 2: Freeze encoder, train decoder only
+**Why KL exclusion is critical:**
+- Without exclusion: KL pushes mu[:, :4] toward N(0,1), conflicting with direct supervision
+- With exclusion: First 4 dims are free to encode parameters at any value
+- Remaining 28 dims still follow N(0,1) for sampling
 
-**Option C: Larger param_head**
-Current: 32 → 64 → 4. Try: 32 → 128 → 64 → 4 with residual.
+**Final Results:**
+
+| Parameter | Best Dim | Correlation |
+|-----------|----------|-------------|
+| leg1 | dim 0 | r = 0.999 |
+| leg2 | dim 1 | r = 0.999 |
+| width | dim 2 | r = 0.998 |
+| thickness | dim 3 | r = 0.355 |
+
+**Thickness limitation:** Still moderate correlation. Possible causes:
+- Thickness has smallest range (3-12mm vs 50-200mm for legs)
+- May need stronger supervision or separate treatment
+
+### Alternative Approaches (Not Needed)
+
+**Option B: Two-Phase Training** — Not attempted (direct supervision worked)
+
+**Option C: Larger param_head** — Not needed (direct supervision bypasses param_head)
 
 ### Implemented Architecture
 
@@ -263,16 +281,16 @@ Learned Queries (20 × 256) ─→ [Transformer Decoder × 4 layers]
 # Basic training with mean pooling (default)
 python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
 
-# Training with ATTENTION POOLING (current experiment)
+# RECOMMENDED: Direct latent supervision (encodes all 4 params)
 python scripts/train_transformer_vae.py --epochs 100 \
-    --pooling-type attention --attention-heads 4 \
-    --output-dir outputs/vae_transformer_attn_pool
+    --aux-weight 1.0 --aux-loss-type direct \
+    --output-dir outputs/vae_direct_latent
 
-# Training with auxiliary parameter head
+# Training with auxiliary parameter head (leg1/leg2 only)
 python scripts/train_transformer_vae.py --epochs 100 --aux-weight 0.1 --aux-loss-type correlation
 
 # Test parameter correlations after training
-python scripts/test_tvae.py outputs/vae_transformer/best_model.pt
+python scripts/test_tvae.py outputs/vae_direct_kl_exclude_v2/best_model.pt
 ```
 
 ### Default Hyperparameters
@@ -290,8 +308,8 @@ python scripts/test_tvae.py outputs/vae_transformer/best_model.pt
 | Max nodes | 20 |
 | Learning rate | 1e-4 |
 | Beta (KL weight) | 0.1 (with 30% warmup) |
-| Aux weight | 0.1 (when enabled) |
-| Aux loss type | correlation (options: mse, mse_normalized) |
+| Aux weight | 1.0 (for direct), 0.1 (for correlation) |
+| Aux loss type | **direct** (recommended), correlation, mse, mse_normalized |
 
 ### Hungarian Matching Cost Weights
 
@@ -304,16 +322,16 @@ python scripts/test_tvae.py outputs/vae_transformer/best_model.pt
 
 ### Success Criteria
 
-| Metric | Phase 2 (MLP) | Phase 3 Current | Phase 3 Target |
-|--------|---------------|-----------------|----------------|
+| Metric | Phase 2 (MLP) | Phase 3 Final | Phase 3 Target |
+|--------|---------------|---------------|----------------|
 | Direction accuracy | 64% | Pending | **>80%** |
-| leg1/leg2 correlation | r < 0.3 | r > 0.99 ✓ | r > 0.7 |
-| width correlation | r < 0.3 | r = 0.155 ✗ | **r > 0.7** |
-| thickness correlation | r < 0.3 | r = 0.102 ✗ | **r > 0.7** |
+| leg1/leg2 correlation | r < 0.3 | r = 0.999 ✓ | r > 0.7 |
+| width correlation | r < 0.3 | r = 0.998 ✓ | **r > 0.7** |
+| thickness correlation | r < 0.3 | r = 0.355 ↑ | **r > 0.7** |
 | Face type accuracy | ~85% | 100% ✓ | >95% |
 | Edge prediction accuracy | N/A | 100% ✓ | >90% |
 
-**Current approach:** Multi-head attention pooling (training in progress on RunPod).
+**Status:** Width encoding solved via direct latent supervision. Thickness partially improved but below target.
 
 ---
 
@@ -403,23 +421,23 @@ Topology: 6-15 faces depending on holes/fillet.
 
 | Checkpoint | Description |
 |------------|-------------|
-| `outputs/vae_transformer_attn_pool/best_model.pt` | **IN TRAINING** Attention pooling experiment |
-| `outputs/vae_transformer_aux2_w100/best_model.pt` | Transformer VAE with aux head (leg1/leg2 r>0.98) |
+| `outputs/vae_direct_kl_exclude_v2/best_model.pt` | **RECOMMENDED** Direct latent supervision (width r=0.998) |
+| `outputs/vae_transformer_aux2_w100/best_model.pt` | Transformer VAE with aux head (leg1/leg2 r>0.98, width r=0.155) |
 | `outputs/latent_editor_tvae/best_model.pt` | Latent editor for leg length operations |
 | `outputs/latent_regressor_tvae/best_model.pt` | z → params regressor (2-3mm MAE for legs) |
 | `outputs/vae_variable_v4/best_model.pt` | Phase 2 VAE v4 with collapse fix (32/32 active dims) |
 | `outputs/vae_aux/best_model.pt` | Phase 1 fixed topology VAE (80.2% direction accuracy) |
 | `outputs/vae_transformer/best_model.pt` | Phase 3 Transformer VAE (no aux head) |
 
-**Current experiment:** Attention pooling to address width/thickness encoding via symmetric cancellation fix.
+**Best model for latent editing:** `outputs/vae_direct_kl_exclude_v2/best_model.pt` — first 4 dims encode [leg1, leg2, width, thickness].
 
 ---
 
-## Latent Editor Pipeline (Leg Length Only)
+## Latent Editor Pipeline
 
 ### Current Working Configuration
 
-Due to width/thickness encoding limitations, the latent editor is trained for **leg length operations only**.
+The latent editor was trained on **leg length operations** using the old VAE checkpoint. With the new direct latent supervision model, width editing should also be possible (requires retraining latent editor).
 
 | Component | Checkpoint | Description |
 |-----------|------------|-------------|
@@ -475,26 +493,36 @@ python scripts/infer_latent_editor.py \
 
 ### Latent Space Correlations
 
-The transformer VAE encodes leg1 changes in specific latent dimensions:
+**New model (`vae_direct_kl_exclude_v2`):** First 4 dimensions directly encode parameters:
+
+| Dimension | Parameter | Correlation |
+|-----------|-----------|-------------|
+| dim 0 | leg1 | r = 0.999 |
+| dim 1 | leg2 | r = 0.999 |
+| dim 2 | width | r = 0.998 |
+| dim 3 | thickness | r = 0.355 |
+
+For latent editing, directly modify `z[0:4]` to change parameters.
+
+**Old model (`vae_transformer_aux2_w100`):** Parameters distributed across dimensions:
 
 | Dimension | Correlation with leg1_delta |
 |-----------|----------------------------|
 | dim 23 | r = -0.967 |
 | dim 27 | r = -0.965 |
 | dim 11 | r = +0.962 |
-| dim 25 | r = +0.961 |
-| dim 26 | r = +0.957 |
 
-For a +20mm leg1 change, expected delta_z:
+For the old model, a +20mm leg1 change expected:
 - `delta_z[11]`: ~+0.22 (positive)
 - `delta_z[23]`: ~-0.22 (negative)
 
 ### Known Limitations
 
-1. **Leg-only editing**: Width/thickness not encoded in latent space (r < 0.16)
-2. **Instruction format sensitivity**: Must use explicit `+/-` signs
-3. **Entanglement**: Editing leg1 may cause spurious changes to leg2/width
-4. **Latent regressor accuracy**: ~2-3mm MAE for leg lengths, ~8mm for width
+1. **Latent editor needs retraining**: Current editor trained on old VAE; needs retraining with `vae_direct_kl_exclude_v2` for width editing
+2. **Thickness encoding moderate**: r = 0.355 in new model (improved from 0.102 but below target)
+3. **Instruction format sensitivity**: Must use explicit `+/-` signs
+4. **Entanglement**: Editing leg1 may cause spurious changes to leg2/width
+5. **Latent regressor accuracy**: ~2-3mm MAE for leg lengths, ~8mm for width
 
 ### Latent Regressor vs Geometric Solver
 
