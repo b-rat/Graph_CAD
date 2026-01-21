@@ -1233,6 +1233,29 @@ def normalize_params(params: torch.Tensor) -> torch.Tensor:
     return (params - mins) / ranges
 
 
+def normalize_params_for_latent(params: torch.Tensor) -> torch.Tensor:
+    """
+    Normalize L-bracket parameters to latent-compatible range [-2, 2].
+
+    For direct latent supervision, we want parameters in a range similar
+    to the VAE latent space (approximately standard normal). This maps
+    the parameter ranges to [-2, 2] which covers ~95% of N(0,1).
+
+    Args:
+        params: Raw parameters, shape (batch, 4) in mm
+                [leg1, leg2, width, thickness]
+
+    Returns:
+        Normalized parameters in [-2, 2] range
+    """
+    device = params.device
+    mins = PARAM_MINS.to(device)
+    ranges = PARAM_RANGES.to(device)
+    # First normalize to [0, 1], then scale to [-2, 2]
+    norm_01 = (params - mins) / ranges
+    return norm_01 * 4.0 - 2.0
+
+
 def denormalize_params(params_norm: torch.Tensor) -> torch.Tensor:
     """
     Convert normalized parameters back to physical units (mm).
@@ -1275,7 +1298,7 @@ def transformer_vae_loss_with_aux(
             - existence_logits: (batch, max_nodes)
             - edge_logits: (batch, max_nodes, max_nodes)
             - mu, logvar: latent distribution params
-            - param_pred: (batch, num_params) if aux_weight > 0
+            - param_pred: (batch, num_params) if aux_weight > 0 and not using direct
         targets: Target dict containing:
             - node_features: (batch, max_nodes, 13)
             - face_types: (batch, max_nodes)
@@ -1287,6 +1310,9 @@ def transformer_vae_loss_with_aux(
         config: Loss configuration
         free_bits: Minimum KL per dimension
         aux_loss_type: Type of auxiliary loss:
+            - "direct": Direct latent supervision - forces mu[:, :4] to encode
+              normalized parameters. No param_head needed. Best for encoding
+              parameters that are lost in pooling (width, thickness).
             - "correlation": Negative correlation loss (scale/offset invariant)
             - "mse": Raw MSE loss
             - "mse_normalized": MSE on [0,1] normalized parameters
@@ -1301,7 +1327,20 @@ def transformer_vae_loss_with_aux(
     )
 
     # Auxiliary parameter loss
-    if "param_pred" in outputs and aux_weight > 0:
+    if aux_loss_type == "direct" and aux_weight > 0:
+        # Direct latent supervision: force first 4 dims of mu to encode parameters
+        # This bypasses pooling issues by directly supervising the latent space
+        mu = outputs["mu"]
+        num_params = param_target.shape[1]
+        mu_params = mu[:, :num_params]  # First num_params dimensions
+        param_target_norm = normalize_params_for_latent(param_target)
+        aux_loss = F.mse_loss(mu_params, param_target_norm)
+
+        total_loss = base_loss + aux_weight * aux_loss
+        loss_dict["aux_param_loss"] = aux_loss.detach()
+        loss_dict["aux_weight"] = torch.tensor(aux_weight)
+        loss_dict["direct_latent_supervision"] = torch.tensor(True)
+    elif "param_pred" in outputs and aux_weight > 0:
         param_pred = outputs["param_pred"]
 
         if aux_loss_type == "correlation":

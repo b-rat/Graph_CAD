@@ -432,8 +432,8 @@ def main():
     parser.add_argument("--num-params", type=int, default=4,
                         help="Number of L-bracket parameters to predict")
     parser.add_argument("--aux-loss-type", type=str, default="correlation",
-                        choices=["correlation", "mse", "mse_normalized"],
-                        help="Auxiliary loss type (default: correlation)")
+                        choices=["correlation", "mse", "mse_normalized", "direct"],
+                        help="Auxiliary loss type: correlation, mse, mse_normalized, or direct (latent supervision)")
 
     # Output arguments
     parser.add_argument("--output-dir", type=Path, default=Path("outputs/vae_transformer"),
@@ -518,7 +518,8 @@ def main():
 
     # Create model
     encoder = VariableGraphVAEEncoder(encoder_config)
-    use_param_head = args.aux_weight > 0
+    # Use param_head only if aux_weight > 0 AND not using direct latent supervision
+    use_param_head = args.aux_weight > 0 and args.aux_loss_type != "direct"
     model = TransformerGraphVAE(
         encoder, decoder_config,
         use_param_head=use_param_head,
@@ -559,6 +560,8 @@ def main():
     print(f"  Learning rate: {args.lr}")
     if args.aux_weight > 0:
         print(f"  Aux weight: {args.aux_weight}, Num params: {args.num_params}, Loss type: {args.aux_loss_type}")
+        if args.aux_loss_type == "direct":
+            print(f"  Direct latent supervision: mu[:, :4] will encode normalized parameters")
     print("-" * 140)
 
     best_val_loss = float("inf")
