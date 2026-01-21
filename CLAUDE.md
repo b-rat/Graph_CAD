@@ -62,6 +62,25 @@ The local machine (MPS) is too slow for LLM inference. Always use RunPod for:
 - Exploration studies
 - VAE training with large datasets
 
+### Environment Variables in tmux
+
+**Important:** `.bashrc` is only sourced by interactive shells. When using `tmux new-session -d` (detached/non-interactive), environment variables like `HF_HOME` won't be set.
+
+**Current setup:**
+- `HF_HOME=/workspace/.cache/huggingface` is in `.bashrc` and `.profile`
+- Symlink exists: `/root/.cache/huggingface` → `/workspace/.cache/huggingface`
+- The symlink catches the default HuggingFace cache location even if `HF_HOME` isn't set
+
+**For tmux commands that need specific env vars:**
+```bash
+# Explicitly export in the command
+tmux new-session -d -s train "export HF_HOME=/workspace/.cache/huggingface && python script.py"
+
+# Or rely on the symlink (current state handles HF cache automatically)
+```
+
+**Disk usage note:** The container disk (20G overlay at `/`) fills up quickly. Large caches should go to `/workspace` (network volume). If container disk usage exceeds 80%, check `/root/.cache` for items that should be on the network volume.
+
 ## Technical Stack
 
 - **ML Framework**: PyTorch
