@@ -13,7 +13,7 @@ Creates instruction-latent pairs for all 4 core parameters:
 Uses absolute units (mm) for all commands.
 
 Usage:
-    python scripts/generate_edit_data_transformer.py --vae-checkpoint outputs/vae_direct_kl_exclude_v2/best_model.pt
+    python scripts/generate_edit_data_transformer.py --vae-checkpoint outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt
     python scripts/generate_edit_data_transformer.py --num-samples 10000 --output data/edit_data_all_params
     python scripts/generate_edit_data_transformer.py --legs-only  # For leg-only mode (legacy)
 """
@@ -706,7 +706,7 @@ def main():
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_direct_kl_exclude_v2/best_model.pt",
+        default="outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt",
         help="Path to Transformer VAE checkpoint",
     )
     parser.add_argument(

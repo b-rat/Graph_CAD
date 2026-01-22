@@ -15,7 +15,7 @@ Outputs a comprehensive JSON file with all results for analysis.
 Usage:
     python scripts/explore_instruction_domain.py \
         --num-brackets 10 \
-        --output outputs/exploration/results.json
+        --output outputs_phase3/exploration/results.json
 
     # Quick test run
     python scripts/explore_instruction_domain.py \
@@ -263,7 +263,7 @@ class ModelBundle:
             print(f"  VAE type: TransformerGraphVAE")
             print(f"  Latent dim: {decoder_config.latent_dim}")
         else:
-            raise ValueError("Only Transformer VAE is supported. Use outputs/vae_transformer_aux2_w100/best_model.pt")
+            raise ValueError("Only Transformer VAE is supported. Use outputs_phase3/vae_transformer_aux2_w100/best_model.pt")
 
         # Load Latent Regressor (z -> params directly) - skip if using direct latent supervision
         if self.direct_latent:
@@ -832,17 +832,17 @@ def main():
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_direct_kl_exclude_v2/best_model.pt",
+        default="outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt",
     )
     parser.add_argument(
         "--editor-checkpoint",
         type=str,
-        default="outputs/latent_editor_all_params/best_model.pt",
+        default="outputs_phase3/latent_editor_all_params/best_model.pt",
     )
     parser.add_argument(
         "--latent-regressor-checkpoint",
         type=str,
-        default="outputs/latent_regressor_tvae/best_model.pt",
+        default="outputs_phase3/latent_regressor_tvae/best_model.pt",
     )
     parser.add_argument(
         "--direct-latent",
@@ -856,7 +856,7 @@ def main():
     parser.add_argument(
         "--output",
         type=str,
-        default="outputs/exploration/results.json",
+        default="outputs_phase3/exploration/results.json",
         help="Output JSON file path",
     )
 

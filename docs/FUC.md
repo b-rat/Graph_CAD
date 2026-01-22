@@ -29,7 +29,7 @@ echo 'export HF_HOME=/workspace/.cache/huggingface/' >> ~/.bashrc && \
 source ~/.bashrc && \
 apt-get update && apt-get install -y libxrender1 libxext6 && \
 apt update && apt install nano && \
-apt install jq
+apt install jq -y
 
 echo 'export LS_COLORS="$LS_COLORS:ow=1;34:tw=1;34"' >> ~/.bashrc && \
 source ~/.bashrc

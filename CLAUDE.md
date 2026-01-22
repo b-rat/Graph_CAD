@@ -17,7 +17,7 @@ graph_cad/          # Main package
 
 scripts/            # CLI scripts for training and inference
 tests/              # Unit and integration tests
-outputs/            # Saved model checkpoints (gitignored)
+outputs_phase3/            # Saved model checkpoints (gitignored)
 data/               # Training data (gitignored)
 docs/               # Reports and progress logs
 ```
@@ -234,7 +234,7 @@ kl_per_dim = kl_per_dim[:, 4:]  # Skip supervised dims
 ```bash
 python scripts/train_transformer_vae.py --epochs 100 \
     --aux-weight 1.0 --aux-loss-type direct \
-    --output-dir outputs/vae_direct_kl_exclude_v2
+    --output-dir outputs_phase3/vae_direct_kl_exclude_v2
 ```
 
 **Why KL exclusion is critical:**
@@ -308,13 +308,13 @@ python scripts/train_transformer_vae.py --epochs 100 --train-size 5000
 # RECOMMENDED: Direct latent supervision (encodes all 4 params)
 python scripts/train_transformer_vae.py --epochs 100 \
     --aux-weight 1.0 --aux-loss-type direct \
-    --output-dir outputs/vae_direct_latent
+    --output-dir outputs_phase3/vae_direct_latent
 
 # Training with auxiliary parameter head (leg1/leg2 only)
 python scripts/train_transformer_vae.py --epochs 100 --aux-weight 0.1 --aux-loss-type correlation
 
 # Test parameter correlations after training
-python scripts/test_tvae.py outputs/vae_direct_kl_exclude_v2/best_model.pt
+python scripts/test_tvae.py outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt
 ```
 
 ### Default Hyperparameters
@@ -445,14 +445,14 @@ Topology: 6-15 faces depending on holes/fillet.
 
 | Checkpoint | Description |
 |------------|-------------|
-| `outputs/vae_direct_kl_exclude_v2/best_model.pt` | **RECOMMENDED** VAE with direct latent supervision (width r=0.998) |
-| `outputs/latent_editor_all_params/best_model.pt` | **RECOMMENDED** Latent editor for all 4 params (81.6% dir accuracy) |
-| `outputs/vae_transformer_aux2_w100/best_model.pt` | Old VAE with aux head (leg1/leg2 only) |
-| `outputs/latent_editor_tvae/best_model.pt` | Old latent editor (leg length only) |
-| `outputs/latent_regressor_tvae/best_model.pt` | Old z → params regressor (not needed with direct latent) |
-| `outputs/vae_variable_v4/best_model.pt` | Phase 2 VAE v4 (MLP decoder) |
-| `outputs/vae_aux/best_model.pt` | Phase 1 fixed topology VAE |
-| `outputs/vae_transformer/best_model.pt` | Phase 3 VAE (no aux head) |
+| `outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt` | **RECOMMENDED** VAE with direct latent supervision (width r=0.998) |
+| `outputs_phase3/latent_editor_all_params/best_model.pt` | **RECOMMENDED** Latent editor for all 4 params (81.6% dir accuracy) |
+| `outputs_phase3/vae_transformer_aux2_w100/best_model.pt` | Old VAE with aux head (leg1/leg2 only) |
+| `outputs_phase3/latent_editor_tvae/best_model.pt` | Old latent editor (leg length only) |
+| `outputs_phase3/latent_regressor_tvae/best_model.pt` | Old z → params regressor (not needed with direct latent) |
+| `outputs_phase3/vae_variable_v4/best_model.pt` | Phase 2 VAE v4 (MLP decoder) |
+| `outputs_phase3/vae_aux/best_model.pt` | Phase 1 fixed topology VAE |
+| `outputs_phase3/vae_transformer/best_model.pt` | Phase 3 VAE (no aux head) |
 
 **Best pipeline:** `vae_direct_kl_exclude_v2` + `latent_editor_all_params` with `--direct-latent` flag.
 
@@ -466,8 +466,8 @@ The latent editor is trained on **all 4 core parameters** using the direct laten
 
 | Component | Checkpoint | Description |
 |-----------|------------|-------------|
-| VAE | `outputs/vae_direct_kl_exclude_v2/best_model.pt` | Direct latent supervision (mu[:4] = params) |
-| Latent Editor | `outputs/latent_editor_all_params/best_model.pt` | Mistral 7B + LoRA, trained on all 4 params |
+| VAE | `outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt` | Direct latent supervision (mu[:4] = params) |
+| Latent Editor | `outputs_phase3/latent_editor_all_params/best_model.pt` | Mistral 7B + LoRA, trained on all 4 params |
 | Latent Regressor | Not needed | Use mu[:4] directly (--direct-latent flag) |
 
 ### Training Data
@@ -476,7 +476,7 @@ Edit data location: `data/edit_data_all_params/`
 
 ```json
 {
-  "vae_checkpoint": "outputs/vae_direct_kl_exclude_v2/best_model.pt",
+  "vae_checkpoint": "outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt",
   "latent_dim": 32,
   "edit_types": ["leg1", "leg2", "both_legs", "width", "thickness", "noop"],
   "parameters": ["leg1_length", "leg2_length", "width", "thickness"]
@@ -572,7 +572,7 @@ No separate latent regressor needed. Use `--direct-latent` flag (default=True).
 
 ### Exploration Study Results (All 4 Parameters)
 
-Results from `outputs/exploration/exploration_all_params.json` (20 brackets, 800 trials):
+Results from `outputs_phase3/exploration/exploration_all_params.json` (20 brackets, 800 trials):
 
 **Direction Accuracy:**
 

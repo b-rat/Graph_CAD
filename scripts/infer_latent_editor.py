@@ -698,25 +698,25 @@ def main():
     parser.add_argument(
         "--vae-checkpoint",
         type=str,
-        default="outputs/vae_direct_kl_exclude_v2/best_model.pt",
+        default="outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt",
         help="Path to trained VAE checkpoint (supports Transformer VAE and MLP VAE)",
     )
     parser.add_argument(
         "--editor-checkpoint",
         type=str,
-        default="outputs/latent_editor_all_params/best_model.pt",
+        default="outputs_phase3/latent_editor_all_params/best_model.pt",
         help="Path to trained Latent Editor checkpoint",
     )
     parser.add_argument(
         "--regressor-checkpoint",
         type=str,
-        default="outputs/feature_regressor/best_model.pt",
+        default="outputs_phase3/feature_regressor/best_model.pt",
         help="Path to trained FeatureRegressor checkpoint (for parameter prediction)",
     )
     parser.add_argument(
         "--latent-regressor-checkpoint",
         type=str,
-        default="outputs/latent_regressor_tvae/best_model.pt",
+        default="outputs_phase3/latent_regressor_tvae/best_model.pt",
         help="Path to trained LatentRegressor checkpoint (predicts 4 core params from z)",
     )
     parser.add_argument(
@@ -735,7 +735,7 @@ def main():
     parser.add_argument(
         "--output-dir",
         type=str,
-        default="outputs/inference",
+        default="outputs_phase3/inference",
         help="Directory to save inference results",
     )
     parser.add_argument(
@@ -1215,9 +1215,9 @@ def main():
     elif not use_geometric_solver and not use_latent_regressor:
         print(f"  No parameter extraction method available.")
         print("  Options:")
-        print(f"    --latent-regressor-checkpoint outputs/latent_regressor_tvae/best_model.pt  (z → 4 core params)")
-        print(f"    --full-latent-regressor-checkpoint outputs/full_latent_regressor/best_model.pt  (z → ALL params, generates STEP)")
-        print(f"    --regressor-checkpoint outputs/feature_regressor/best_model.pt  (decode → features → params)")
+        print(f"    --latent-regressor-checkpoint outputs_phase3/latent_regressor_tvae/best_model.pt  (z → 4 core params)")
+        print(f"    --full-latent-regressor-checkpoint outputs_phase3/full_latent_regressor/best_model.pt  (z → ALL params, generates STEP)")
+        print(f"    --regressor-checkpoint outputs_phase3/feature_regressor/best_model.pt  (decode → features → params)")
 
     # Display results if we have predictions
     if orig_params_pred is not None:
