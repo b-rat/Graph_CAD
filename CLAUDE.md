@@ -17,10 +17,21 @@ graph_cad/          # Main package
 
 scripts/            # CLI scripts for training and inference
 tests/              # Unit and integration tests
-outputs_phase3/            # Saved model checkpoints (gitignored)
+outputs/            # Phase 4 checkpoints (gitignored)
+outputs_phase3/     # Phase 3 archived checkpoints (gitignored)
 data/               # Training data (gitignored)
 docs/               # Reports and progress logs
 ```
+
+## Output Directories
+
+| Directory | Contents |
+|-----------|----------|
+| `outputs/` | **Phase 4** (current) — new training runs go here |
+| `outputs_phase3/` | **Phase 3** (archived) — transformer VAE, latent editor, exploration results |
+| `outputs_phase2/` | **Phase 2** (archived) — MLP decoder experiments |
+
+Phase 3 checkpoints are referenced with full paths (e.g., `outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt`).
 
 ## Development Commands
 
