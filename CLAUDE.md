@@ -53,14 +53,20 @@ For tasks requiring GPU (model training, inference with LLM, exploration studies
 # Connect to RunPod
 ssh runpod
 
-# For long-running tasks, use tmux
-tmux new -s train  # or tmux attach -t train
-cd /workspace/Graph_CAD && python scripts/train_transformer_vae.py --epochs 100
-# Ctrl+B, D to detach
+# For long-running tasks, use nohup with unbuffered output (preferred over tmux)
+ssh runpod "cd /workspace/Graph_CAD && PYTHONUNBUFFERED=1 nohup python scripts/train_hetero_vae.py --epochs 100 --output-dir outputs/hetero_vae > outputs/hetero_vae_train.log 2>&1 &"
+
+# Monitor training progress
+ssh runpod "tail -f /workspace/Graph_CAD/outputs/hetero_vae_train.log"
+
+# Check if training is running
+ssh runpod "ps aux | grep python | grep train"
 
 # Quick one-off commands
 ssh runpod "cd /workspace/Graph_CAD && python scripts/explore_instruction_domain.py --num-brackets 10"
 ```
+
+**Important:** Always use `PYTHONUNBUFFERED=1` with nohup to ensure logs are written in real-time.
 
 **Note:** `HF_HOME=/workspace/.cache/huggingface` is configured via symlink. Large caches go to `/workspace` (network volume).
 
