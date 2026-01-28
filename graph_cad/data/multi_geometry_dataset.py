@@ -176,11 +176,11 @@ def brep_graph_to_hetero_data(
         data['edge', 'bounds', 'face'].edge_index = torch.zeros(2, 0, dtype=torch.long)
         data['face', 'bounded_by', 'edge'].edge_index = torch.zeros(2, 0, dtype=torch.long)
 
-    # Metadata
+    # Metadata - store params with shape (1, 6) for proper batching
     data.geometry_type = torch.tensor([geometry_type], dtype=torch.long)
-    data.params = params
-    data.params_normalized = params_normalized
-    data.params_mask = params_mask
+    data.params = params.unsqueeze(0) if params.dim() == 1 else params
+    data.params_normalized = params_normalized.unsqueeze(0) if params_normalized.dim() == 1 else params_normalized
+    data.params_mask = params_mask.unsqueeze(0) if params_mask.dim() == 1 else params_mask
     data.bbox_diagonal = torch.tensor([graph.bbox_diagonal], dtype=torch.float32)
     data.bbox_center = torch.tensor(graph.bbox_center, dtype=torch.float32)
     data.num_vertices = torch.tensor([graph.num_vertices], dtype=torch.long)
