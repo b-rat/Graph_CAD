@@ -1378,3 +1378,209 @@ def transformer_vae_loss_with_aux(
     loss_dict["total_loss"] = total_loss.detach()
 
     return total_loss, loss_dict
+
+
+# =============================================================================
+# Multi-Geometry Loss Functions (Phase 4 - HeteroVAE)
+# =============================================================================
+
+
+@dataclass
+class MultiGeometryLossConfig:
+    """Configuration for multi-geometry VAE loss."""
+
+    # Reconstruction weights (same as HungarianLossConfig)
+    node_feature_loss_weight: float = 1.0
+    face_type_loss_weight: float = 2.0
+    existence_loss_weight: float = 1.0
+    edge_loss_weight: float = 1.0
+
+    # Geometry classification weight
+    geometry_type_loss_weight: float = 2.0
+
+    # Parameter prediction weight
+    param_loss_weight: float = 1.0
+
+    # Edge class imbalance
+    edge_positive_weight: float = 3.0
+
+
+def multi_geometry_vae_loss(
+    outputs: dict[str, torch.Tensor],
+    targets: dict[str, torch.Tensor],
+    beta: float = 0.1,
+    config: MultiGeometryLossConfig | None = None,
+    free_bits: float = 0.5,
+    kl_exclude_dims: int = 0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Combined loss for Multi-Geometry VAE with Hungarian matching.
+
+    Loss = GraphReconLoss + GeometryTypeLoss + ParamLoss + beta * KL
+
+    Args:
+        outputs: Model outputs dict containing:
+            - node_features: (batch, max_faces, face_features)
+            - face_type_logits: (batch, max_faces, num_face_types)
+            - existence_logits: (batch, max_faces)
+            - edge_logits: (batch, max_faces, max_faces)
+            - geometry_type_logits: (batch, num_geometry_types)
+            - param_pred: (batch, max_params)
+            - param_mask: (batch, max_params)
+            - mu, logvar: latent distribution params
+        targets: Target dict containing:
+            - node_features: (batch, max_faces, face_features)
+            - face_types: (batch, max_faces)
+            - node_mask: (batch, max_faces)
+            - adj_matrix: (batch, max_faces, max_faces)
+            - geometry_type: (batch,)
+            - params_normalized: (batch, max_params)
+            - params_mask: (batch, max_params)
+        beta: KL divergence weight
+        config: Loss configuration
+        free_bits: Minimum KL per dimension
+        kl_exclude_dims: Number of latent dims to exclude from KL
+
+    Returns:
+        total_loss: Combined loss
+        loss_dict: All components for logging
+    """
+    if config is None:
+        config = MultiGeometryLossConfig()
+
+    # Use existing Hungarian matching loss for graph reconstruction
+    hungarian_config = HungarianLossConfig(
+        node_feature_loss_weight=config.node_feature_loss_weight,
+        face_type_loss_weight=config.face_type_loss_weight,
+        existence_loss_weight=config.existence_loss_weight,
+        edge_loss_weight=config.edge_loss_weight,
+        edge_positive_weight=config.edge_positive_weight,
+    )
+
+    # Build targets dict for transformer_vae_loss
+    recon_targets = {
+        'node_features': targets['node_features'],
+        'face_types': targets['face_types'],
+        'node_mask': targets['node_mask'],
+        'adj_matrix': targets['adj_matrix'],
+    }
+
+    # Graph reconstruction + KL loss
+    graph_loss, loss_dict = transformer_vae_loss(
+        outputs, recon_targets, beta, hungarian_config, free_bits, kl_exclude_dims
+    )
+
+    # Geometry type classification loss
+    geo_type_loss = F.cross_entropy(
+        outputs['geometry_type_logits'],
+        targets['geometry_type'].squeeze(-1).long()
+    )
+
+    # Geometry type accuracy
+    with torch.no_grad():
+        pred_geo_type = outputs['geometry_type_logits'].argmax(dim=-1)
+        geo_type_acc = (pred_geo_type == targets['geometry_type'].squeeze(-1)).float().mean()
+
+    loss_dict['geometry_type_loss'] = geo_type_loss.detach()
+    loss_dict['geometry_type_acc'] = geo_type_acc
+
+    # Parameter prediction loss (masked)
+    if 'param_pred' in outputs and 'params_normalized' in targets:
+        param_pred = outputs['param_pred']
+        param_target = targets['params_normalized']
+        param_mask = targets['params_mask']
+
+        # Masked MSE
+        se = (param_pred - param_target) ** 2
+        num_valid = param_mask.sum().clamp(min=1)
+        param_loss = (se * param_mask).sum() / num_valid
+
+        loss_dict['param_loss'] = param_loss.detach()
+
+        # Per-parameter errors for analysis
+        with torch.no_grad():
+            abs_errors = (param_pred - param_target).abs()
+            mean_abs_error = (abs_errors * param_mask).sum() / num_valid
+            loss_dict['param_mae'] = mean_abs_error
+    else:
+        param_loss = torch.tensor(0.0, device=outputs['mu'].device)
+        loss_dict['param_loss'] = param_loss
+
+    # Combined loss
+    total_loss = (
+        graph_loss
+        + config.geometry_type_loss_weight * geo_type_loss
+        + config.param_loss_weight * param_loss
+    )
+
+    loss_dict['total_loss'] = total_loss.detach()
+
+    return total_loss, loss_dict
+
+
+def multi_geometry_vae_loss_with_direct_latent(
+    outputs: dict[str, torch.Tensor],
+    targets: dict[str, torch.Tensor],
+    beta: float = 0.1,
+    aux_weight: float = 1.0,
+    config: MultiGeometryLossConfig | None = None,
+    free_bits: float = 0.5,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    """
+    Multi-geometry VAE loss with direct latent supervision.
+
+    Forces the first N dimensions of mu to encode normalized parameters,
+    where N varies by geometry type. The remaining dimensions are free
+    for reconstruction.
+
+    This bypasses pooling issues by directly supervising the latent space.
+
+    Args:
+        outputs: Model outputs (must include 'mu')
+        targets: Target dict (must include 'params_normalized', 'params_mask', 'geometry_type')
+        beta: KL weight
+        aux_weight: Direct supervision weight
+        config: Loss configuration
+        free_bits: Minimum KL per dimension
+
+    Returns:
+        total_loss: Combined loss
+        loss_dict: All components for logging
+    """
+    if config is None:
+        config = MultiGeometryLossConfig()
+
+    # Get max params from targets mask
+    max_used_params = int(targets['params_mask'].sum(dim=-1).max().item())
+
+    # Exclude first max_params dims from KL
+    kl_exclude_dims = max_used_params if aux_weight > 0 else 0
+
+    # Base loss with KL exclusion
+    total_loss, loss_dict = multi_geometry_vae_loss(
+        outputs, targets, beta, config, free_bits, kl_exclude_dims
+    )
+
+    # Add direct latent supervision
+    if aux_weight > 0:
+        mu = outputs['mu']
+        param_target = targets['params_normalized']
+        param_mask = targets['params_mask']
+
+        # Scale params to latent range [-2, 2]
+        param_target_latent = param_target * 4.0 - 2.0
+
+        # MSE on first N dims of mu (masked by param_mask)
+        mu_params = mu[:, :param_target.shape[1]]
+        se = (mu_params - param_target_latent) ** 2
+        num_valid = param_mask.sum().clamp(min=1)
+        direct_loss = (se * param_mask).sum() / num_valid
+
+        total_loss = total_loss + aux_weight * direct_loss
+
+        loss_dict['direct_latent_loss'] = direct_loss.detach()
+        loss_dict['direct_latent_supervision'] = torch.tensor(True)
+        loss_dict['kl_exclude_dims'] = torch.tensor(kl_exclude_dims)
+        loss_dict['total_loss'] = total_loss.detach()
+
+    return total_loss, loss_dict

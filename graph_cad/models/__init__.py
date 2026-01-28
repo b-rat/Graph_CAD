@@ -32,6 +32,24 @@ try:
         load_feature_regressor,
         save_feature_regressor,
     )
+    # Phase 4: HeteroGNN VAE
+    from graph_cad.models.hetero_vae import (
+        HeteroVAE,
+        HeteroVAEConfig,
+        HeteroGNNEncoder,
+        create_hetero_vae,
+    )
+    from graph_cad.models.hetero_decoder import (
+        HeteroGraphDecoder,
+        HeteroDecoderConfig,
+        GeometryAwareParamHead,
+        MultiGeometryDecoder,
+    )
+    from graph_cad.models.losses import (
+        MultiGeometryLossConfig,
+        multi_geometry_vae_loss,
+        multi_geometry_vae_loss_with_direct_latent,
+    )
 
     __all__ = [
         # Parameter regressor (GNN-based)
@@ -60,6 +78,18 @@ try:
         "TransformerGraphDecoder",
         "TransformerDecoderConfig",
         "TransformerGraphVAE",
+        # HeteroGNN VAE (Phase 4)
+        "HeteroVAE",
+        "HeteroVAEConfig",
+        "HeteroGNNEncoder",
+        "create_hetero_vae",
+        "HeteroGraphDecoder",
+        "HeteroDecoderConfig",
+        "GeometryAwareParamHead",
+        "MultiGeometryDecoder",
+        "MultiGeometryLossConfig",
+        "multi_geometry_vae_loss",
+        "multi_geometry_vae_loss_with_direct_latent",
     ]
 except ImportError:
     # PyTorch/PyG not installed
@@ -75,6 +105,15 @@ try:
         load_llm_with_lora,
         create_latent_editor,
     )
+    # Phase 4: Extended latent editor
+    from graph_cad.models.extended_latent_editor import (
+        ExtendedLatentEditor,
+        ExtendedLatentEditorConfig,
+        GeometryClassificationHead,
+        MultiTypeParamHeads,
+        compute_extended_editor_loss,
+        create_extended_latent_editor,
+    )
 
     __all__.extend([
         "LatentEditor",
@@ -83,6 +122,13 @@ try:
         "OutputProjector",
         "load_llm_with_lora",
         "create_latent_editor",
+        # Extended editor (Phase 4)
+        "ExtendedLatentEditor",
+        "ExtendedLatentEditorConfig",
+        "GeometryClassificationHead",
+        "MultiTypeParamHeads",
+        "compute_extended_editor_loss",
+        "create_extended_latent_editor",
     ])
 except ImportError:
     # transformers/peft not installed

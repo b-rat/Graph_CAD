@@ -670,3 +670,29 @@ python scripts/explore_instruction_domain.py --num-brackets 10
 python scripts/explore_instruction_domain.py --num-brackets 50 \
     --output outputs/exploration/full_study_260117.json
 ```
+
+_________
+## Phase 4:
+                                                                             
+### Training Pipeline                                                                 
+                                                                                  
+#### Stage 1: Train VAE on all 6 geometries                                          
+python scripts/train_hetero_vae.py \                                              
+    --samples-per-type 5000 \                                                     
+    --epochs 100 \                                                                
+    --output-dir outputs/hetero_vae_v1                                            
+                                                                                  
+#### Stage 2: Pre-train LLM (classification + regression)                            
+python scripts/train_llm_pretrain.py \                                            
+    --vae-checkpoint outputs/hetero_vae_v1/best_model.pt \                        
+    --freeze-vae \                                                                
+    --epochs 50 \                                                                 
+    --output-dir outputs/llm_pretrain_v1                                          
+                                                                                  
+#### Stage 3: Train instruction following                                            
+python scripts/train_llm_instruct.py \                                            
+    --vae-checkpoint outputs/hetero_vae_v1/best_model.pt \                        
+    --llm-checkpoint outputs/llm_pretrain_v1/best_model.pt \                      
+    --freeze-vae \                                                                
+    --epochs 30 \                                                                 
+    --output-dir outputs/llm_instruct_v1                                          
