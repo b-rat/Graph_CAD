@@ -27,6 +27,7 @@ from torch_geometric.nn import HeteroConv, GATConv, global_mean_pool
 from graph_cad.data.brep_types import (
     NUM_EDGE_TYPES,
     NUM_FACE_TYPES,
+    NUM_GEOMETRY_TYPES,
     VERTEX_FEATURE_DIM,
     EDGE_FEATURE_DIM,
     FACE_FEATURE_DIM,
@@ -370,6 +371,13 @@ class HeteroVAE(nn.Module):
         )
         self.decoder = TransformerGraphDecoder(decoder_config)
 
+        # Geometry type classification head
+        self.geometry_type_head = nn.Sequential(
+            nn.Linear(self.config.latent_dim, 64),
+            nn.ReLU(),
+            nn.Linear(64, NUM_GEOMETRY_TYPES),
+        )
+
         # Parameter prediction head
         self.use_param_head = use_param_head
         self.num_params = num_params
@@ -459,6 +467,7 @@ class HeteroVAE(nn.Module):
             'mu': mu,
             'logvar': logvar,
             'z': z,
+            'geometry_type_logits': self.geometry_type_head(mu),
         }
 
         if self.use_param_head:
