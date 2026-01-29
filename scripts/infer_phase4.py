@@ -28,10 +28,10 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import random
 import sys
 from pathlib import Path
 
+import numpy as np
 import torch
 
 # Add project root to path
@@ -66,13 +66,10 @@ GEOMETRY_CLASSES = {
 
 def create_random_geometry(geometry_type: int, seed: int | None = None):
     """Create a random geometry of the specified type."""
-    rng = random.Random(seed)
+    rng = np.random.default_rng(seed)
 
     cls = GEOMETRY_CLASSES[geometry_type]
-    if geometry_type == 0:  # VariableLBracket needs rng argument
-        return cls.random(rng)
-    else:
-        return cls.random(rng)
+    return cls.random(rng)
 
 
 def geometry_to_params(geometry, geometry_type: int) -> torch.Tensor:
