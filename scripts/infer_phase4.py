@@ -66,11 +66,13 @@ GEOMETRY_CLASSES = {
 
 def create_random_geometry(geometry_type: int, seed: int | None = None):
     """Create a random geometry of the specified type."""
-    if seed is not None:
-        random.seed(seed)
+    rng = random.Random(seed)
 
     cls = GEOMETRY_CLASSES[geometry_type]
-    return cls.random()
+    if geometry_type == 0:  # VariableLBracket needs rng argument
+        return cls.random(rng)
+    else:
+        return cls.random(rng)
 
 
 def geometry_to_params(geometry, geometry_type: int) -> torch.Tensor:
