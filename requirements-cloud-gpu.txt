@@ -17,10 +17,10 @@ tqdm>=4.65.0
 # CAD Geometry (required for data generation)
 cadquery>=2.3.0
 
-# LLM Integration
-transformers>=4.36.0
-peft>=0.7.0
-accelerate>=0.25.0
+# LLM Integration (pinned versions for compatibility with 4-bit quantization)
+transformers==4.40.0
+peft==0.10.0
+accelerate==0.28.0
 bitsandbytes>=0.41.0  # 4-bit/8-bit quantization (requires CUDA)
 
 # Training utilities
