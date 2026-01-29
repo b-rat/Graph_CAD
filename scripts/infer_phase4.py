@@ -84,8 +84,8 @@ def geometry_to_params(geometry, geometry_type: int) -> torch.Tensor:
     elif geometry_type == 1:  # Tube
         return torch.tensor([
             geometry.length,
-            geometry.outer_diameter,
-            geometry.inner_diameter,
+            geometry.outer_dia,
+            geometry.inner_dia,
         ], dtype=torch.float32)
     elif geometry_type == 2:  # Channel
         return torch.tensor([
@@ -110,9 +110,9 @@ def geometry_to_params(geometry, geometry_type: int) -> torch.Tensor:
             geometry.length,
             geometry.width,
             geometry.height,
-            geometry.hole_diameter,
-            geometry.hole_x_offset,
-            geometry.hole_y_offset,
+            geometry.hole_dia,
+            geometry.hole_x,
+            geometry.hole_y,
         ], dtype=torch.float32)
     else:
         raise ValueError(f"Unknown geometry type: {geometry_type}")
