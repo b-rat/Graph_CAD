@@ -180,8 +180,14 @@ def load_pretrained_llm(
         print("  Loading Mistral 7B with LoRA...")
         mistral, tokenizer = load_llm_with_lora(config, device_map="auto")
         llm.set_llm(mistral, tokenizer)
-
-    llm = llm.to(device)
+        # Move non-LLM components to device (LLM already on device via device_map)
+        llm.latent_projector = llm.latent_projector.to(device)
+        llm.output_projector = llm.output_projector.to(device)
+        llm.class_head = llm.class_head.to(device)
+        llm.param_heads = llm.param_heads.to(device)
+        llm.pretrain_encoder = llm.pretrain_encoder.to(device)
+    else:
+        llm = llm.to(device)
     return llm
 
 
