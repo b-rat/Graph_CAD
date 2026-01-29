@@ -35,9 +35,9 @@ from graph_cad.data.geometry_generators import (
     BlockHole,
     Channel,
     Cylinder,
+    SimpleBracket,
     Tube,
 )
-from graph_cad.data.l_bracket import VariableLBracket, VariableLBracketRanges
 from graph_cad.data.param_normalization import (
     get_param_count,
     normalize_params,
@@ -50,7 +50,7 @@ if TYPE_CHECKING:
 
 # Generator classes and their geometry type IDs
 GENERATORS = {
-    GEOMETRY_BRACKET: VariableLBracket,
+    GEOMETRY_BRACKET: SimpleBracket,
     GEOMETRY_TUBE: Tube,
     GEOMETRY_CHANNEL: Channel,
     GEOMETRY_BLOCK: Block,
@@ -240,12 +240,6 @@ class MultiGeometryDataset(Dataset):
         # Cache
         self._cache: dict[int, HeteroData] = {}
 
-        # Bracket-specific ranges
-        self._bracket_ranges = VariableLBracketRanges(
-            prob_fillet=0.0,  # No fillets for simpler topology
-            prob_hole_configs=(1.0, 0.0, 0.0),  # No holes for simpler topology
-        )
-
     def len(self) -> int:
         """Return total number of samples."""
         return self.num_samples
@@ -308,7 +302,7 @@ class MultiGeometryDataset(Dataset):
     def _generate_geometry(self, geometry_type: int, rng: Generator) -> Any:
         """Generate random geometry of specified type."""
         if geometry_type == GEOMETRY_BRACKET:
-            return VariableLBracket.random(rng, self._bracket_ranges)
+            return SimpleBracket.random(rng)
         elif geometry_type == GEOMETRY_TUBE:
             return Tube.random(rng)
         elif geometry_type == GEOMETRY_CHANNEL:
@@ -325,7 +319,7 @@ class MultiGeometryDataset(Dataset):
     def _generate_fallback(self, geometry_type: int) -> Any:
         """Generate simple fallback geometry if random generation fails."""
         if geometry_type == GEOMETRY_BRACKET:
-            return VariableLBracket(
+            return SimpleBracket(
                 leg1_length=100, leg2_length=100, width=30, thickness=5
             )
         elif geometry_type == GEOMETRY_TUBE:

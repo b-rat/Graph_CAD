@@ -673,6 +673,145 @@ class BlockHole:
 
 
 # =============================================================================
+# SimpleBracket (L-Bracket without holes or fillets)
+# =============================================================================
+
+
+@dataclass
+class SimpleBracketRanges:
+    """Parameter ranges for SimpleBracket generation."""
+
+    leg1_length: tuple[float, float] = (50.0, 200.0)
+    leg2_length: tuple[float, float] = (50.0, 200.0)
+    width: tuple[float, float] = (20.0, 60.0)
+    thickness: tuple[float, float] = (3.0, 12.0)
+
+
+class SimpleBracket:
+    """
+    Simple L-bracket with 4 parameters, no holes or fillets.
+
+    Coordinate system:
+    - Origin at outer corner where leg1 and leg2 meet
+    - Leg1 extends along +X axis
+    - Leg2 extends along +Y axis
+    - Width along +Z axis
+
+    Parameters:
+        leg1_length: Length of first leg along X axis (mm)
+        leg2_length: Length of second leg along Y axis (mm)
+        width: Width/depth along Z axis (mm)
+        thickness: Material thickness (mm)
+    """
+
+    def __init__(
+        self,
+        leg1_length: float,
+        leg2_length: float,
+        width: float,
+        thickness: float,
+    ):
+        self.leg1_length = leg1_length
+        self.leg2_length = leg2_length
+        self.width = width
+        self.thickness = thickness
+        self._validate()
+
+    def _validate(self) -> None:
+        errors = []
+        if self.leg1_length <= 0:
+            errors.append(f"leg1_length must be positive, got {self.leg1_length}")
+        if self.leg2_length <= 0:
+            errors.append(f"leg2_length must be positive, got {self.leg2_length}")
+        if self.width <= 0:
+            errors.append(f"width must be positive, got {self.width}")
+        if self.thickness <= 0:
+            errors.append(f"thickness must be positive, got {self.thickness}")
+        if self.thickness >= min(self.leg1_length, self.leg2_length):
+            errors.append(
+                f"thickness ({self.thickness}) must be < min leg length "
+                f"({min(self.leg1_length, self.leg2_length)})"
+            )
+
+        if errors:
+            raise ValueError("Invalid SimpleBracket geometry:\n  " + "\n  ".join(errors))
+
+    def to_solid(self) -> cq.Workplane:
+        """Generate CadQuery solid geometry."""
+        # Create L-shape profile in XY plane
+        # Start at origin, go along leg1, then up, then back along leg2
+        profile = (
+            cq.Workplane("XY")
+            .moveTo(0, 0)
+            .lineTo(self.leg1_length, 0)  # Bottom of leg1
+            .lineTo(self.leg1_length, self.thickness)  # Right side of leg1
+            .lineTo(self.thickness, self.thickness)  # Inner corner
+            .lineTo(self.thickness, self.leg2_length)  # Top of leg2
+            .lineTo(0, self.leg2_length)  # Left side of leg2
+            .close()
+        )
+
+        # Extrude along Z for width
+        solid = profile.extrude(self.width)
+
+        return solid
+
+    def to_step(self, path: str | Path) -> None:
+        """Export to STEP file."""
+        solid = self.to_solid()
+        cq.exporters.export(solid, str(path), exportType="STEP")
+
+    def to_dict(self) -> dict:
+        """Return parameters as dictionary."""
+        return {
+            "leg1_length": self.leg1_length,
+            "leg2_length": self.leg2_length,
+            "width": self.width,
+            "thickness": self.thickness,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "SimpleBracket":
+        """Create from dictionary."""
+        return cls(
+            leg1_length=d["leg1_length"],
+            leg2_length=d["leg2_length"],
+            width=d["width"],
+            thickness=d["thickness"],
+        )
+
+    @classmethod
+    def random(
+        cls, rng: "Generator", ranges: SimpleBracketRanges | None = None
+    ) -> "SimpleBracket":
+        """Generate random SimpleBracket with valid geometry."""
+        if ranges is None:
+            ranges = SimpleBracketRanges()
+
+        leg1_length = rng.uniform(*ranges.leg1_length)
+        leg2_length = rng.uniform(*ranges.leg2_length)
+        width = rng.uniform(*ranges.width)
+
+        # Ensure thickness is valid
+        max_thickness = min(leg1_length, leg2_length) - 1.0
+        thickness_max = min(ranges.thickness[1], max_thickness)
+        thickness = rng.uniform(ranges.thickness[0], max(ranges.thickness[0], thickness_max))
+
+        return cls(
+            leg1_length=leg1_length,
+            leg2_length=leg2_length,
+            width=width,
+            thickness=thickness,
+        )
+
+    def __repr__(self) -> str:
+        return (
+            f"SimpleBracket(leg1={self.leg1_length:.1f}, leg2={self.leg2_length:.1f}, "
+            f"width={self.width:.1f}, thickness={self.thickness:.1f})"
+        )
+
+
+# =============================================================================
 # Generator Registry
 # =============================================================================
 

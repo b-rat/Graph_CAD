@@ -49,13 +49,12 @@ from graph_cad.data.param_normalization import (
     normalize_params,
 )
 from graph_cad.data.geometry_generators import (
-    Tube, Channel, Block, Cylinder, BlockHole,
+    Tube, Channel, Block, Cylinder, BlockHole, SimpleBracket,
 )
-from graph_cad.data.l_bracket import VariableLBracket
 
 
 GEOMETRY_CLASSES = {
-    0: VariableLBracket,
+    0: SimpleBracket,
     1: Tube,
     2: Channel,
     3: Block,
