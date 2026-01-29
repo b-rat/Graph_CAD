@@ -241,14 +241,16 @@ def run_inference(
                 geometry_types=torch.tensor([geometry_type], device=device)
             )
 
-            # Get predicted parameters
-            param_pred = outputs['param_pred'][0]  # (6,)
+            # Get predicted parameter delta (instruct mode outputs deltas, not absolute)
+            param_delta = outputs['param_pred'][0]  # (6,) - delta in normalized space
             z_edited = outputs['z_edited'][0]  # (32,)
 
-        # Denormalize predicted parameters
+        # Apply delta to original normalized params
         num_params = GEOMETRY_PARAM_COUNTS[geometry_type]
-        pred_params_norm = param_pred[:num_params].cpu()
-        pred_params = denormalize_params(pred_params_norm, geometry_type)
+        edited_params_norm = original_params_norm + param_delta[:num_params].cpu()
+        # Clamp to valid range
+        edited_params_norm = edited_params_norm.clamp(0, 1)
+        pred_params = denormalize_params(edited_params_norm, geometry_type)
 
         if verbose:
             print(f"\nEdited parameters:")
