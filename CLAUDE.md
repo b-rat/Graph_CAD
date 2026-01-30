@@ -85,7 +85,7 @@ ssh runpod "cd /workspace/Graph_CAD && python scripts/explore_instruction_domain
 | 1. Fixed Topology PoC | Complete | 80.2% direction accuracy | `docs/fixed_topology_poc_archive.md` |
 | 2. Variable Topology (MLP) | Complete | 64% ceiling | `docs/phase2_mlp_decoder_report.md` |
 | 3. DETR Transformer | Complete | 100% direction accuracy | `docs/phase3_transformer_decoder_report.md` |
-| 4. Multi-Geometry B-Rep | **In Progress** | 6 geometry types | `docs/phase-4.md` |
+| 4. Multi-Geometry B-Rep | **Complete** | 100% type acc, ~2mm MAE | `docs/phase-4.md` |
 
 ---
 
@@ -225,7 +225,7 @@ Topology: 6-15 faces depending on holes/fillet. Deprecated in favor of SimpleBra
 
 **Goal:** Extend Graph_CAD to support 6 geometry types using full B-Rep graph representation.
 
-**Status:** Retraining with SimpleBracket (v2) in progress.
+**Status:** Complete (v2 with SimpleBracket).
 
 ### Geometry Types
 
@@ -256,13 +256,24 @@ Initial training with VariableLBracket (complex bracket with holes/fillets):
 
 ### Training Progress (v2 - SimpleBracket)
 
-Retraining with SimpleBracket in progress:
+Retraining with SimpleBracket complete:
 
-| Stage | Checkpoint | Status |
-|-------|------------|--------|
-| 1. HeteroVAE | `outputs/hetero_vae_v2/best_model.pt` | Training (100% GeoAcc, ~0.04 ParamMAE at epoch 42) |
-| 2. LLM Pre-train | `outputs/llm_pretrain_v2/best_model.pt` | Pending |
-| 3. LLM Instruct | `outputs/llm_instruct_v2/best_model.pt` | Pending |
+| Stage | Checkpoint | GeoAcc | ParamMAE |
+|-------|------------|--------|----------|
+| 1. HeteroVAE | `outputs/hetero_vae_v2/best_model.pt` | 100% | 0.0285 |
+| 2. LLM Pre-train | `outputs/llm_pretrain_v2/best_model.pt` | 100% | 0.0423 |
+| 3. LLM Instruct | `outputs/llm_instruct_v2/best_model.pt` | 100% | 0.0135 |
+
+**Parameter Fidelity (v2):**
+
+| Geometry | Type Acc | MAE (mm) |
+|----------|----------|----------|
+| Bracket | 100% | 1.67 |
+| Tube | 100% | 2.81 |
+| Channel | 100% | 2.09 |
+| Block | 100% | 2.36 |
+| Cylinder | 100% | 2.93 |
+| BlockHole | 100% | 2.39 |
 
 ### Architecture
 
