@@ -68,6 +68,8 @@ ssh runpod "cd /workspace/Graph_CAD && python scripts/explore_instruction_domain
 
 **Important:** Always use `PYTHONUNBUFFERED=1` with nohup to ensure logs are written in real-time.
 
+**Important:** Never transfer code files directly to RunPod (e.g., via `scp` or `rsync`). Always commit and push changes locally, then `git pull` on RunPod. Direct transfers cause branch divergence.
+
 **Note:** `HF_HOME=/workspace/.cache/huggingface` is configured via symlink. Large caches go to `/workspace` (network volume).
 
 ## Technical Stack
