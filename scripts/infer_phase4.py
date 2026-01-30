@@ -164,6 +164,17 @@ def load_llm(checkpoint_path: str, vae_config, device: str):
     print("  Loading Mistral 7B with LoRA...")
     lora_config = LatentEditorConfig()
     mistral, tokenizer = load_llm_with_lora(lora_config, device_map="auto")
+
+    # Load trained LoRA adapter weights
+    lora_path = checkpoint_path.replace('.pt', '_lora')
+    if Path(lora_path).exists():
+        print(f"  Loading trained LoRA adapter from {lora_path}...")
+        from peft import PeftModel
+        # Load the trained adapter weights
+        mistral.load_adapter(lora_path, adapter_name="default")
+    else:
+        print(f"  Warning: LoRA adapter not found at {lora_path}, using untrained weights")
+
     model.set_llm(mistral, tokenizer)
 
     # Move non-LLM components to device

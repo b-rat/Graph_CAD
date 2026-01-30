@@ -62,6 +62,9 @@ Host runpod
     IdentityFile ~/.ssh/id_ed25519
 ```
 
+```bash
+ssh runpod "tail -n +1 -f /workspace/Graph_CAD/outputs/hetero_vae_train.log"
+```
 
 ```bash
 python scripts/train_latent_editor.py \
@@ -696,3 +699,27 @@ python scripts/train_llm_instruct.py \
     --freeze-vae \                                                                
     --epochs 30 \                                                                 
     --output-dir outputs/llm_instruct_v1                                          
+
+```bash
+# Next Steps (Training):
+# Stage 1: Train HeteroVAE
+python scripts/train_hetero_vae.py --samples-per-type 5000 --epochs 100
+                                                                                                            
+# Stage 2: Pre-train LLM
+python scripts/train_llm_pretrain.py --vae-checkpoint outputs/hetero_vae/best_model.pt --epochs 50
+                                                                                                            
+# Stage 3: Train instruction following
+python scripts/train_llm_instruct.py --vae-checkpoint outputs/hetero_vae/best_model.pt \
+    --llm-checkpoint outputs/llm_pretrain/best_model.pt --epochs 30
+```
+
+```bash
+python scripts/train_hetero_vae.py \
+    --samples-per-type 5000 --epochs 100 && \
+TOKENIZERS_PARALLELISM=false python scripts/train_llm_pretrain.py \
+    --vae-checkpoint outputs/hetero_vae/best_model.pt \
+    --epochs 50 && \
+TOKENIZERS_PARALLELISM=false python scripts/train_llm_instruct.py \
+    --vae-checkpoint outputs/hetero_vae/best_model.pt \
+    --llm-checkpoint outputs/llm_pretrain/best_model.pt --epochs 30
+```

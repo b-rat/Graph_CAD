@@ -264,16 +264,17 @@ Retraining with SimpleBracket complete:
 | 2. LLM Pre-train | `outputs/llm_pretrain_v2/best_model.pt` | 100% | 0.0423 |
 | 3. LLM Instruct | `outputs/llm_instruct_v2/best_model.pt` | 100% | 0.0135 |
 
-**Parameter Fidelity (v2):**
+**Parameter Fidelity (v2, 100 samples/type):**
 
-| Geometry | Type Acc | MAE (mm) |
-|----------|----------|----------|
-| Bracket | 100% | 1.67 |
-| Tube | 100% | 2.81 |
-| Channel | 100% | 2.09 |
-| Block | 100% | 2.36 |
-| Cylinder | 100% | 2.93 |
-| BlockHole | 100% | 2.39 |
+| Geometry | Type Acc | MAE (mm) | Std |
+|----------|----------|----------|-----|
+| Bracket | 100% | 1.70 | ±0.76 |
+| Tube | 100% | 2.74 | ±1.37 |
+| Channel | 100% | 2.03 | ±0.83 |
+| Block | 100% | 2.37 | ±1.11 |
+| Cylinder | 100% | 2.78 | ±1.51 |
+| BlockHole | 100% | 2.38 | ±0.88 |
+| **Overall** | **100%** | **2.33** | ±1.18 |
 
 ### Architecture
 
