@@ -315,6 +315,25 @@ Full pipeline analysis tracking: ground truth → VAE-predicted → LLM-edited p
 - Cylinder has highest non-target drift (3.59mm) — only 2 params, edits may leak
 - LLM achieves 99.6% direction accuracy with mean target delta of 13.5mm
 
+**Magnitude Calibration (Requested vs Achieved):**
+
+| Requested | N | Mean Achieved | Ratio |
+|-----------|---|---------------|-------|
+| 2-3mm | 2 | 0.3mm | 12% |
+| 5mm | 2 | 2.3mm | 45% |
+| 8-10mm | 4 | 6.9mm | 76% |
+| 15mm | 6 | 14.7mm | 98% |
+| 20mm | 5 | 22.0mm | 110% |
+| 25mm | 4 | 17.8mm | 71% |
+| 30mm | 2 | 17.9mm | 60% |
+
+**Parameter-Specific Issues:**
+- `thickness` severely underachieves (12% ratio) — small parameter range (3-12mm)
+- `hole_dia` underachieves (18% ratio) — similar small range issue
+- `leg1/leg2` overachieve (132% ratio) — large parameter range (50-200mm)
+
+**Root Cause:** LLM trained on normalized deltas (0-1). Parameters with small absolute ranges compress small mm changes; parameters with large ranges amplify them. The model learns "medium-sized edits" in normalized space, which map to different mm values depending on parameter range.
+
 ### Architecture
 
 ```
