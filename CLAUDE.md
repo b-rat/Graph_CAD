@@ -17,7 +17,7 @@ graph_cad/          # Main package
 
 scripts/            # CLI scripts for training and inference
 tests/              # Unit and integration tests
-outputs/            # Phase 4 checkpoints (gitignored)
+outputs/            # Current phase checkpoints (gitignored)
 outputs_phase3/     # Phase 3 archived checkpoints (gitignored)
 data/               # Training data (gitignored)
 docs/               # Reports and progress logs
@@ -27,8 +27,9 @@ docs/               # Reports and progress logs
 
 | Directory | Contents |
 |-----------|----------|
-| `outputs/` | **Phase 4** (current) — new training runs go here |
-| `outputs_phase3/` | **Phase 3** (archived) — transformer VAE, latent editor, exploration results |
+| `outputs/` | **Phase 5** (current) — new training runs go here |
+| `outputs_phase4/` | **Phase 4** (archived) — multi-geometry B-Rep, HeteroVAE |
+| `outputs_phase3/` | **Phase 3** (archived) — transformer VAE, latent editor |
 | `outputs_phase2/` | **Phase 2** (archived) — MLP decoder experiments |
 
 ## Development Commands
@@ -87,7 +88,7 @@ ssh runpod "cd /workspace/Graph_CAD && python scripts/explore_instruction_domain
 | 1. Fixed Topology PoC | Complete | 80.2% direction accuracy | `docs/fixed_topology_poc_archive.md` |
 | 2. Variable Topology (MLP) | Complete | 64% ceiling | `docs/phase2_mlp_decoder_report.md` |
 | 3. DETR Transformer | Complete | 100% direction accuracy | `docs/phase3_transformer_decoder_report.md` |
-| 4. Multi-Geometry B-Rep | **Complete** | 100% type acc, ~2mm MAE | `docs/phase-4.md` |
+| 4. Multi-Geometry B-Rep | Complete | 99.6% dir acc, 2.3mm MAE | `docs/phase4_multi_geometry_report.md` |
 
 ---
 
@@ -177,255 +178,70 @@ Topology: 6-15 faces depending on holes/fillet. Deprecated in favor of SimpleBra
 
 ## Key Files
 
+### Models
 | File | Purpose |
 |------|---------|
-| `graph_cad/models/transformer_decoder.py` | Transformer decoder + VAE wrapper |
-| `graph_cad/models/graph_vae.py` | GAT encoder |
-| `graph_cad/models/latent_editor.py` | Mistral 7B + LoRA |
-| `graph_cad/models/losses.py` | Hungarian matching + aux losses |
-| `graph_cad/data/dataset.py` | VariableLBracketDataset |
-| `graph_cad/data/graph_extraction.py` | Graph extraction from STEP |
-| `scripts/train_transformer_vae.py` | VAE training |
-| `scripts/train_latent_editor.py` | Latent editor training |
-| `scripts/infer_latent_editor.py` | Full inference pipeline |
-
-### Phase 4 Files
-
-| File | Purpose |
-|------|---------|
-| `graph_cad/data/brep_types.py` | Edge/face/geometry type constants |
-| `graph_cad/data/brep_extraction.py` | Full B-Rep (V/E/F) graph extraction |
-| `graph_cad/data/geometry_generators.py` | SimpleBracket, Tube, Channel, Block, Cylinder, BlockHole |
-| `graph_cad/data/multi_geometry_dataset.py` | Unified dataset for all 6 geometry types |
-| `graph_cad/data/param_normalization.py` | Per-type min-max normalization |
 | `graph_cad/models/hetero_vae.py` | HeteroGNN encoder + VAE wrapper |
-| `graph_cad/models/hetero_decoder.py` | Geometry-aware decoder + param heads |
 | `graph_cad/models/extended_latent_editor.py` | LLM with classification + regression |
+| `graph_cad/models/latent_editor.py` | Mistral 7B + LoRA base |
+
+### Data
+| File | Purpose |
+|------|---------|
+| `graph_cad/data/brep_extraction.py` | Full B-Rep (V/E/F) graph extraction |
+| `graph_cad/data/geometry_generators.py` | 6 geometry generators |
+| `graph_cad/data/multi_geometry_dataset.py` | Unified dataset |
+| `graph_cad/data/param_normalization.py` | Per-type min-max normalization |
+
+### Scripts
+| File | Purpose |
+|------|---------|
 | `scripts/train_hetero_vae.py` | HeteroVAE training |
-| `scripts/train_llm_pretrain.py` | LLM pre-training (latent -> class + params) |
-| `scripts/train_llm_instruct.py` | LLM instruction following training |
-| `scripts/infer_phase4.py` | Phase 4 inference (all geometry types) |
-| `scripts/study_param_fidelity.py` | Parameter reconstruction accuracy study |
-| `scripts/study_inference_space.py` | Full pipeline error attribution study |
+| `scripts/train_llm_pretrain.py` | LLM pre-training |
+| `scripts/train_llm_instruct.py` | LLM instruction tuning |
+| `scripts/infer_phase4.py` | Full inference pipeline |
+| `scripts/study_inference_space.py` | Pipeline analysis study |
 
 ---
 
-## Phase 3 Checkpoints
+## Phase 4 Summary
+
+**Problem:** Phase 3 limited to single geometry type (L-bracket) with 4 parameters.
+
+**Solution:** HeteroGNN encoder with full B-Rep (Vertex-Edge-Face) representation + Extended LLM with geometry classification and per-type parameter heads.
+
+**Results:**
+
+| Metric | Phase 3 | Phase 4 |
+|--------|---------|---------|
+| Geometry types | 1 | **6** |
+| Type classification | N/A | **100%** |
+| Parameter MAE | ~2mm | **2.3mm** |
+| Direction accuracy | 100% | **99.6%** |
+| Parameter isolation | Poor | **1.2mm drift** |
+
+**Geometry Types:** SimpleBracket, Tube, Channel, Block, Cylinder, BlockHole (2-6 params each)
+
+**Key Insight:** Magnitude calibration varies by parameter range — small-range params (thickness: 12%) underachieve while large-range params (leg1: 132%) overshoot. Root cause: normalized training compresses/amplifies by range.
+
+**Remaining Limitation:** Magnitude accuracy 12-132% depending on parameter range.
+
+See `docs/phase4_multi_geometry_report.md` for full details.
+
+---
+
+## Current Checkpoints (Phase 4)
 
 | Checkpoint | Description |
 |------------|-------------|
-| `outputs_phase3/vae_direct_kl_exclude_v2/best_model.pt` | **RECOMMENDED** VAE (width r=0.998) |
-| `outputs_phase3/latent_editor_all_params/best_model.pt` | **RECOMMENDED** Latent editor |
+| `outputs/hetero_vae_v2/best_model.pt` | HeteroVAE encoder (6 geometry types) |
+| `outputs/llm_instruct_v2/best_model.pt` | LLM instruction-tuned |
+| `outputs/llm_instruct_v2/best_model_lora/` | LoRA adapter weights |
 
-**Latent Space:** First 4 dims directly encode parameters (no regressor needed):
-- `mu[0]` = leg1, `mu[1]` = leg2, `mu[2]` = width, `mu[3]` = thickness
-
----
-
----
-
-## Phase 4: Multi-Geometry B-Rep
-
-**Goal:** Extend Graph_CAD to support 6 geometry types using full B-Rep graph representation.
-
-**Status:** Complete (v2 with SimpleBracket).
-
-### Geometry Types
-
-| ID | Type | Parameters | Count |
-|----|------|------------|-------|
-| 0 | Bracket (SimpleBracket) | leg1, leg2, width, thickness | 4 |
-| 1 | Tube | length, outer_dia, inner_dia | 3 |
-| 2 | Channel | width, height, length, thickness | 4 |
-| 3 | Block | length, width, height | 3 |
-| 4 | Cylinder | length, diameter | 2 |
-| 5 | BlockHole | length, width, height, hole_dia, hole_x, hole_y | 6 |
-
-### Training Progress (v1 - VariableLBracket)
-
-Initial training with VariableLBracket (complex bracket with holes/fillets):
-
-| Stage | Checkpoint | GeoAcc | ParamMAE |
-|-------|------------|--------|----------|
-| 1. HeteroVAE | `outputs/hetero_vae/best_model.pt` | 100% | 0.0246 |
-| 2. LLM Pre-train | `outputs/llm_pretrain/best_model.pt` | 100% | 0.0431 |
-| 3. LLM Instruct | `outputs/llm_instruct/best_model.pt` | 100% | 0.0133 |
-
-**Issue:** Parameter fidelity study revealed Bracket performed poorly:
-- Bracket: 60% type accuracy, 14mm MAE
-- Other types: 100% type accuracy, ~2mm MAE
-
-**Solution:** Replaced VariableLBracket with SimpleBracket (no holes, no fillets) for cleaner topology.
-
-### Training Progress (v2 - SimpleBracket)
-
-Retraining with SimpleBracket complete:
-
-| Stage | Checkpoint | GeoAcc | ParamMAE |
-|-------|------------|--------|----------|
-| 1. HeteroVAE | `outputs/hetero_vae_v2/best_model.pt` | 100% | 0.0285 |
-| 2. LLM Pre-train | `outputs/llm_pretrain_v2/best_model.pt` | 100% | 0.0423 |
-| 3. LLM Instruct | `outputs/llm_instruct_v2/best_model.pt` | 100% | 0.0135 |
-
-**Parameter Fidelity (v2, 100 samples/type):**
-
-| Geometry | Type Acc | MAE (mm) | Std |
-|----------|----------|----------|-----|
-| Bracket | 100% | 1.70 | ±0.76 |
-| Tube | 100% | 2.74 | ±1.37 |
-| Channel | 100% | 2.03 | ±0.83 |
-| Block | 100% | 2.37 | ±1.11 |
-| Cylinder | 100% | 2.78 | ±1.51 |
-| BlockHole | 100% | 2.38 | ±0.88 |
-| **Overall** | **100%** | **2.33** | ±1.18 |
-
-**Inference Pipeline Results (v2):**
-
-| Geometry | Instruction | Target Param | Δ Achieved | Direction |
-|----------|-------------|--------------|------------|-----------|
-| Bracket | "make leg1 +20mm longer" | leg1 | +28.15mm | ✓ |
-| Bracket | "make width +10mm wider" | width | +4.05mm | ✓ |
-| Tube | "make it -15mm shorter" | length | -10.01mm | ✓ |
-| Channel | "make height +25mm taller" | height | +16.28mm | ✓ |
-| Block | "make it -30mm shorter in length" | length | -11.91mm | ✓ |
-| BlockHole | "make hole_dia +5mm bigger" | hole_dia | +0.91mm | ✓ |
-
-- **Direction accuracy: 100%** — all edits in correct direction
-- **Magnitude accuracy: ~50-80%** — close but not exact
-- **Parameter isolation: Good** — non-target params mostly stable
-- **Type classification: 100%** — all geometries correctly identified
-
-**Inference Space Study (500 samples, 27 instructions):**
-
-Full pipeline analysis tracking: ground truth → VAE-predicted → LLM-edited parameters.
-
-| Geometry | Dir Acc | VAE MAE | Target Δ | Non-Target Δ |
-|----------|---------|---------|----------|--------------|
-| Bracket | 100% | 1.68 mm | 15.70 mm | 0.27 mm |
-| Tube | 100% | 2.47 mm | 12.03 mm | 0.93 mm |
-| Channel | 100% | 2.00 mm | 10.74 mm | 0.31 mm |
-| Block | 97.5% | 2.39 mm | 18.21 mm | 0.35 mm |
-| Cylinder | 100% | 2.92 mm | 11.63 mm | 3.59 mm |
-| BlockHole | 100% | 2.30 mm | 12.27 mm | 1.95 mm |
-| **Overall** | **99.6%** | **2.27 mm** | **13.52 mm** | **1.20 mm** |
-
-**Error Attribution:**
-- VAE introduces ~2.3mm reconstruction error before LLM editing
-- Non-target parameters drift ~1.2mm during editing (good isolation)
-- Cylinder has highest non-target drift (3.59mm) — only 2 params, edits may leak
-- LLM achieves 99.6% direction accuracy with mean target delta of 13.5mm
-
-**Magnitude Calibration (Requested vs Achieved):**
-
-| Requested | N | Mean Achieved | Ratio |
-|-----------|---|---------------|-------|
-| 2-3mm | 2 | 0.3mm | 12% |
-| 5mm | 2 | 2.3mm | 45% |
-| 8-10mm | 4 | 6.9mm | 76% |
-| 15mm | 6 | 14.7mm | 98% |
-| 20mm | 5 | 22.0mm | 110% |
-| 25mm | 4 | 17.8mm | 71% |
-| 30mm | 2 | 17.9mm | 60% |
-
-**Parameter-Specific Issues:**
-- `thickness` severely underachieves (12% ratio) — small parameter range (3-12mm)
-- `hole_dia` underachieves (18% ratio) — similar small range issue
-- `leg1/leg2` overachieve (132% ratio) — large parameter range (50-200mm)
-
-**Root Cause:** LLM trained on normalized deltas (0-1). Parameters with small absolute ranges compress small mm changes; parameters with large ranges amplify them. The model learns "medium-sized edits" in normalized space, which map to different mm values depending on parameter range.
-
-### Architecture
-
-```
-STEP → B-Rep Extraction → HeteroGNN (V↔E↔F) → z (32D) → Transformer Decoder
-                                                 ↓
-                           Extended LLM (class + params)
-                                                 ↓
-                                    Geometry Type + Parameters
-```
-
-### B-Rep HeteroGraph Features
-
-| Node Type | Features | Dimension |
-|-----------|----------|-----------|
-| Vertex | Normalized xyz coordinates | 3 |
-| Edge | length, tangent_xyz, curvatures | 6 |
-| Face | area, normal_xyz, centroid_xyz, curvatures, bbox | 13 |
-
-### Training Pipeline
-
+**Inference:**
 ```bash
-# Stage 1: Train HeteroVAE on all 6 geometries
-python scripts/train_hetero_vae.py \
-    --samples-per-type 5000 \
-    --epochs 100 \
-    --output-dir outputs/hetero_vae_v2
-
-# Stage 2: Pre-train LLM (classification + regression)
-python scripts/train_llm_pretrain.py \
-    --vae-checkpoint outputs/hetero_vae_v2/best_model.pt \
-    --epochs 50 \
-    --output-dir outputs/llm_pretrain_v2
-
-# Stage 3: Train instruction following (requires GPU)
-python scripts/train_llm_instruct.py \
-    --vae-checkpoint outputs/hetero_vae_v2/best_model.pt \
-    --llm-checkpoint outputs/llm_pretrain_v2/best_model.pt \
-    --epochs 30 \
-    --output-dir outputs/llm_instruct_v2
+python scripts/infer_phase4.py --random --geometry-type bracket \
+    --instruction "make leg1 +20mm longer"
 ```
 
-### Phase 4 Inference
-
-```bash
-# VAE-only mode (test parameter reconstruction)
-python scripts/infer_phase4.py --random --geometry-type bracket --vae-only
-
-# Full LLM instruction following
-python scripts/infer_phase4.py --random --geometry-type tube \
-    --instruction "make it +20mm longer"
-
-# Test all geometry types (VAE only)
-python scripts/infer_phase4.py --test-all
-```
-
----
-
-## Latent Editor Usage
-
-### Inference
-
-```bash
-python scripts/infer_latent_editor.py \
-    --random-bracket \
-    --instruction "make leg1 +20mm longer" \
-    --seed 123
-```
-
-### Critical: Instruction Format
-
-**Must use explicit `+/-` signs** (training data artifact):
-
-| Instruction | Result |
-|-------------|--------|
-| `make leg1 +20mm longer` | Correct |
-| `make leg1 20mm longer` | WRONG (sign flipped) |
-
-### Training
-
-```bash
-# VAE with direct latent supervision
-python scripts/train_transformer_vae.py --epochs 100 \
-    --aux-weight 1.0 --aux-loss-type direct \
-    --output-dir outputs/vae_new
-
-# Generate edit data
-python scripts/generate_edit_data_transformer.py \
-    --vae-checkpoint outputs/vae_new/best_model.pt \
-    --output-dir data/edit_data_new
-
-# Train latent editor
-python scripts/train_latent_editor.py \
-    --data-dir data/edit_data_new \
-    --output-dir outputs/latent_editor_new
-```
+**Critical:** Must use explicit `+/-` signs in instructions.
