@@ -206,6 +206,7 @@ Topology: 6-15 faces depending on holes/fillet. Deprecated in favor of SimpleBra
 | `scripts/train_llm_instruct.py` | LLM instruction following training |
 | `scripts/infer_phase4.py` | Phase 4 inference (all geometry types) |
 | `scripts/study_param_fidelity.py` | Parameter reconstruction accuracy study |
+| `scripts/study_inference_space.py` | Full pipeline error attribution study |
 
 ---
 
@@ -293,6 +294,26 @@ Retraining with SimpleBracket complete:
 - **Magnitude accuracy: ~50-80%** — close but not exact
 - **Parameter isolation: Good** — non-target params mostly stable
 - **Type classification: 100%** — all geometries correctly identified
+
+**Inference Space Study (500 samples, 27 instructions):**
+
+Full pipeline analysis tracking: ground truth → VAE-predicted → LLM-edited parameters.
+
+| Geometry | Dir Acc | VAE MAE | Target Δ | Non-Target Δ |
+|----------|---------|---------|----------|--------------|
+| Bracket | 100% | 1.68 mm | 15.70 mm | 0.27 mm |
+| Tube | 100% | 2.47 mm | 12.03 mm | 0.93 mm |
+| Channel | 100% | 2.00 mm | 10.74 mm | 0.31 mm |
+| Block | 97.5% | 2.39 mm | 18.21 mm | 0.35 mm |
+| Cylinder | 100% | 2.92 mm | 11.63 mm | 3.59 mm |
+| BlockHole | 100% | 2.30 mm | 12.27 mm | 1.95 mm |
+| **Overall** | **99.6%** | **2.27 mm** | **13.52 mm** | **1.20 mm** |
+
+**Error Attribution:**
+- VAE introduces ~2.3mm reconstruction error before LLM editing
+- Non-target parameters drift ~1.2mm during editing (good isolation)
+- Cylinder has highest non-target drift (3.59mm) — only 2 params, edits may leak
+- LLM achieves 99.6% direction accuracy with mean target delta of 13.5mm
 
 ### Architecture
 
