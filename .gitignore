@@ -214,6 +214,7 @@ outputs/
 outputs_251211
 outputs_phase2/
 outputs_phase3/
+outputs_phase4/
 *.pt
 *.pth
 *.ckpt
