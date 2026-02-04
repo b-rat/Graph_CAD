@@ -21,6 +21,7 @@ outputs/            # Current phase checkpoints (gitignored)
 outputs_phase3/     # Phase 3 archived checkpoints (gitignored)
 data/               # Training data (gitignored)
 docs/               # Reports and progress logs
+CAD/                # Face-annotated prototype STEP files for synthetic dataset generation
 ```
 
 ## Output Directories
@@ -245,3 +246,89 @@ python scripts/infer_phase4.py --random --geometry-type bracket \
 ```
 
 **Critical:** Must use explicit `+/-` signs in instructions.
+
+---
+
+## CAD Folder: Annotated STEP Files
+
+The `CAD/` folder contains face-annotated STEP files that serve as prototypes for synthetic dataset generation. These files have semantic labels on `ADVANCED_FACE` entities (e.g., `'x0'`, `'slot.bottom'`, `'z_length'`) that enable natural language geometry editing.
+
+### Purpose
+
+- **Direct STEP editing**: Map instructions like "increase z_length by 20mm" to specific coordinate changes
+- **Synthetic dataset generation**: Programmatically vary labeled parameters to create (geometry, instruction, delta) training pairs
+- **Ground truth for training**: Labels define which faces/parameters the model should associate with instructions
+
+### STEP File Structure
+
+STEP files use `ADVANCED_FACE` entities with labels:
+```
+#349 = ADVANCED_FACE ( 'z_length', ( #289 ), #135, .F. ) ;
+#38 = ADVANCED_FACE ( 'bottom', ( #201 ), #140, .F. ) ;
+#195 = ADVANCED_FACE ( 'slot.planar_1', ( #286 ), #329, .F. ) ;
+```
+
+Face geometry is defined by: `ADVANCED_FACE` → `PLANE` → `AXIS2_PLACEMENT_3D` → `CARTESIAN_POINT` + `DIRECTION`
+
+### Modifying STEP Files
+
+**Simple coordinate changes** (dimensions, positions):
+1. Read the STEP file and identify the dimension to change
+2. Find all `CARTESIAN_POINT` entries with coordinates matching the current value
+3. Use `replace_all` to update coordinates (e.g., change z=3.0" to z=4.0")
+
+Example - change z_length from 3" to 4" (file uses inches):
+```python
+# Replace all z-coordinates at 3.0 with 4.0
+Edit(file_path, old_string="3.000000000000000000", new_string="4.000000000000000000", replace_all=True)
+```
+
+**Topology changes** (adding/removing features like blind slots):
+1. Use CadQuery to generate new geometry programmatically
+2. Post-process the STEP file to add semantic face labels
+3. See `CAD/generate_blind_slot.py` for a complete example
+
+### Labeling Faces Programmatically
+
+When generating STEP files with CadQuery, faces have empty labels. Post-process to add labels:
+
+```python
+def get_face_label(plane_point, plane_normal):
+    """Assign label based on plane position and normal direction."""
+    px, py, pz = plane_point
+    nx, ny, nz = plane_normal
+
+    # Block boundary faces
+    if abs(px) < tol and abs(nx) > 0.9: return "x0"
+    if abs(px - BLOCK_X) < tol and abs(nx) > 0.9: return "x_width"
+    if abs(pz - BLOCK_Z) < tol and abs(nz) > 0.9: return "z_length"
+
+    # Slot faces (interior)
+    if abs(px - SLOT_LEFT_X) < tol and abs(nx) > 0.9: return "slot.wall_left"
+    if abs(py - SLOT_BOTTOM_Y) < tol and abs(ny) > 0.9: return "slot.bottom"
+    # etc.
+```
+
+Parse STEP to find: `PLANE` → `AXIS2_PLACEMENT_3D` → get point and normal → assign label.
+
+### Current Prototype Files
+
+| File | Description |
+|------|-------------|
+| `block_slot_annot.STEP` | Original block with through slot (SolidWorks export) |
+| `block_slot_annot_100mm.STEP` | Modified dimensions via coordinate editing |
+| `block_slot_annot_blind.STEP` | Blind slot variant (CadQuery + post-process labels) |
+| `generate_blind_slot.py` | Script to generate labeled blind slot geometry |
+
+### Face Label Conventions
+
+| Label Pattern | Meaning |
+|---------------|---------|
+| `x0`, `x_width` | Faces at x=0 and x=max |
+| `z0`, `z_length` | Faces at z=0 and z=max |
+| `bottom`, `top.planar_N` | Faces at y=0 and y=max |
+| `slot.wall_left/right` | Vertical slot walls |
+| `slot.bottom` | Horizontal slot floor |
+| `slot.end` | Blind end cap (if applicable) |
+| `hole.N` | Hole cylindrical surfaces |
+| `fillet.N` | Fillet surfaces |
