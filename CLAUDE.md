@@ -90,6 +90,7 @@ ssh runpod "cd /workspace/Graph_CAD && python scripts/explore_instruction_domain
 | 2. Variable Topology (MLP) | Complete | 64% ceiling | `docs/phase2_mlp_decoder_report.md` |
 | 3. DETR Transformer | Complete | 100% direction accuracy | `docs/phase3_transformer_decoder_report.md` |
 | 4. Multi-Geometry B-Rep | Complete | 99.6% dir acc, 2.3mm MAE | `docs/phase4_multi_geometry_report.md` |
+| 5. Geometric Comprehension | Planning | — | `docs/Faeno Phase 5 ammended.md` |
 
 ---
 
@@ -128,24 +129,58 @@ STEP → Graph Extraction → GAT Encoder → z (32D) → Transformer Decoder �
                                      Edited z → STEP
 ```
 
-### Node Features (13D)
+### Node Features (V/E/F Heterogeneous Graph)
+
+**Vertex Features (3D)**
+
+| Index | Feature | Normalization |
+|-------|---------|---------------|
+| 0-2 | position (xyz) | (coord - bbox_center) / bbox_diagonal |
+
+**Edge Features (6D)**
+
+| Index | Feature | Normalization |
+|-------|---------|---------------|
+| 0 | length | / bbox_diagonal |
+| 1-3 | tangent at midpoint (xyz) | unit vector |
+| 4 | curvature at start | × bbox_diagonal, clipped to [-10, 10] |
+| 5 | curvature at end | × bbox_diagonal, clipped to [-10, 10] |
+
+**Edge Types**
+
+| Code | Type | Detection |
+|------|------|-----------|
+| 0 | LINE | Straight edge |
+| 1 | ARC | Circular arc (partial circle) |
+| 2 | CIRCLE | Full circle (closed curve) |
+| 3 | OTHER | B-spline, ellipse, etc. |
+
+**Face Features (13D)**
 
 | Index | Feature | Normalization |
 |-------|---------|---------------|
 | 0 | area | / bbox_diagonal² |
 | 1-3 | normal (xyz) | unit vector |
 | 4-6 | centroid (xyz) | (c - bbox_center) / bbox_diagonal |
-| 7-8 | curvatures | × bbox_diagonal |
+| 7-8 | curvatures | × bbox_diagonal, clipped to [-10, 10] |
 | 9 | bbox_diagonal | / 100mm |
 | 10-12 | bbox_center | / 100mm |
 
-### Face Types
+**Face Types**
 
 | Code | Type | Detection |
 |------|------|-----------|
 | 0 | PLANAR | Flat faces |
 | 1 | HOLE | Cylinder with arc ≥ 180° |
 | 2 | FILLET | Cylinder with arc < 180°, or torus |
+
+**Topology Connections**
+
+| Relation | Direction | Description |
+|----------|-----------|-------------|
+| vertex_to_edge | V → E | Which vertices bound each edge |
+| edge_to_face | E → F | Which edges bound each face |
+| (reverse edges added for bidirectional message passing) | | |
 
 ### SimpleBracket (Phase 4)
 
